@@ -1,9 +1,9 @@
 use std::env;
 use std::process;
 
-mod torrent;
+mod torrent_file;
 
-pub use crate::torrent::torrent_file;
+pub use crate::torrent_file::torrent;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -13,19 +13,10 @@ fn main() {
         process::exit(0);
     }
 
-    let filename = &args[1];
+    let t = torrent::new(&args[1]).unwrap_or_else(|err| {
+        println!("{}", err);
+        process::exit(0);
+    });
 
-    let point = torrent_file::TorrentFile { x: 1, y: 2 };
-
-    // Convert the Point to a JSON string.
-    let serialized = serde_bencode::to_string(&point).unwrap();
-
-    // Prints serialized = {"x":1,"y":2}
-    println!("serialized = {}", serialized);
-
-    // Convert the JSON string back to a Point.
-    let deserialized: torrent_file::TorrentFile = serde_bencode::from_str(&serialized).unwrap();
-
-    // Prints deserialized = Point { x: 1, y: 2 }
-    println!("deserialized = {:?}", deserialized);
+    t.download();
 }
