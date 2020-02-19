@@ -1,4 +1,6 @@
 pub mod torrent {
+    use crypto::digest::Digest;
+    use crypto::sha1::Sha1;
     use serde::{Deserialize, Serialize};
     use serde_bytes::ByteBuf;
     use std::fs;
@@ -11,13 +13,13 @@ pub mod torrent {
 
     #[derive(Serialize, Deserialize, Debug)]
     struct Info {
+        #[serde(default)]
+        files: Option<Vec<FileInfo>>,
+        #[serde(default)]
+        length: Option<i64>,
         pub name: String,
         #[serde(rename = "piece length")]
         pub piece_length: i64,
-        #[serde(default)]
-        length: Option<i64>,
-        #[serde(default)]
-        files: Option<Vec<FileInfo>>,
         pieces: ByteBuf,
     }
 
@@ -46,20 +48,54 @@ pub mod torrent {
         announce: String,
         name: String,
         piece_length: i64,
+        info_hash: String,
+        pieces: Vec<[u8; 20]>,
         // files: Vec<File>,
     }
 
-    pub fn new(s: &str) -> Result<Torrent, &str> {
-        let f = TorrentFile::new(s)?;
+    fn split_hash(pieces: Vec<u8>) -> Vec<[u8; 20]> {
+        let num_pieces = (pieces.len() / 20) + 1;
+        let mut res: Vec<[u8; 20]> = Vec::with_capacity(num_pieces);
+        let arr = pieces.as_slice();
 
-        Ok(Torrent {
-            announce: f.announce,
-            name: f.info.name,
-            piece_length: f.info.piece_length,
-        })
+        for i in 0..num_pieces {
+            let j = 20 * i;
+            for k in 0..20 {
+                if j + k > pieces.len() - 1 {
+                    break;
+                }
+                res[i][k] = arr[j + k]
+            }
+        }
+        res
+    }
+
+    pub fn new(s: &str) -> Result<Torrent, &str> {
+        if let Ok(f) = TorrentFile::new(s) {
+            // calculate info hash
+            let mut hash = Sha1::new();
+            let info = serde_bencode::to_bytes(&f.info).unwrap();
+            hash.input(info.as_slice());
+
+            Ok(Torrent {
+                announce: f.announce,
+                name: f.info.name,
+                piece_length: f.info.piece_length,
+                info_hash: hash.result_str(),
+                pieces: split_hash(f.info.pieces.into_vec()),
+            })
+        } else {
+            Err("Can't parse torrent file")
+        }
     }
 
     impl Torrent {
         pub fn download(&self) {}
     }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn what() {}
 }
