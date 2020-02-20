@@ -5,7 +5,8 @@ mod torrent_file;
 
 pub use crate::torrent_file::torrent;
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let args: Vec<String> = env::args().collect();
 
     if args.len() != 2 {
@@ -13,10 +14,10 @@ fn main() {
         process::exit(0);
     }
 
-    let t = torrent::new(&args[1]).unwrap_or_else(|err| {
+    let mut t = torrent::new(&args[1]).unwrap_or_else(|err| {
         println!("{}", err);
         process::exit(0);
     });
 
-    t.download();
+    t.download().await;
 }
