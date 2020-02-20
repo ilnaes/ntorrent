@@ -1,6 +1,5 @@
 pub mod torrent {
-    use crypto::digest::Digest;
-    use crypto::sha1::Sha1;
+    use sha1::{Sha1, Digest};
     use rand::random;
     use reqwest::Client;
     use serde::{Deserialize, Serialize};
@@ -44,7 +43,7 @@ pub mod torrent {
         info_hash: String,
         pieces: Vec<[u8; 20]>,
         files: Vec<FileInfo>,
-        peer_id: [u8; 20],
+        peer_id: String,
         interval: Option<i64>,
         peer_list: Option<Vec<String>>,
     }
@@ -84,14 +83,19 @@ pub mod torrent {
                 }]
             });
 
+            let h = hash.result();
+            println!("{:?}", h);
+            let h = url::form_urlencoded::byte_serialize(h.as_slice()).collect::<Vec<_>>().concat();
+            println!("{:?}", h);
+
             Ok(Torrent {
                 announce: f.announce,
                 piece_length: f.info.piece_length,
-                info_hash: hash.result_str(),
+                info_hash: h,
                 // pieces: split_hash(f.info.pieces.into_vec()),
                 pieces: Vec::new(),
                 files,
-                peer_id: random::<[u8; 20]>(),
+                peer_id: String::new(),
                 interval: None,
                 peer_list: None,
             })
@@ -103,8 +107,7 @@ pub mod torrent {
     impl Torrent {
         async fn get_peerlist(&mut self) {
             let client = Client::new();
-            let param = [("info_hash", self.info_hash.clone()), ("peer_id", hex::encode(self.peer_id)), ("port", String::from("2222")), ("uploaded", String::from("0")), ("downloaded", String::from("0")), ("compact", String::from("1")), ("left", String::from(format!("{}", self.piece_length)))];
-            println!("{}", self.info_hash);
+            let param = [("info_hash", self.info_hash.clone()), ("peer_id", self.peer_id.clone()), ("port", String::from("2222")), ("uploaded", String::from("0")), ("downloaded", String::from("0")), ("compact", String::from("1")), ("left", String::from(format!("{}", self.piece_length)))];
             let res = client
                 .get(self.announce.as_str())
                 .query(&param)
