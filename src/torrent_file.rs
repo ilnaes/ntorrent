@@ -1,15 +1,14 @@
 pub mod torrent {
+    use crate::tracker;
     use sha1::{Sha1, Digest};
-    use rand::random;
-    use reqwest::Client;
     use serde::{Deserialize, Serialize};
     use serde_bytes::ByteBuf;
     use std::fs;
 
     #[derive(Serialize, Deserialize, Debug)]
-    struct FileInfo {
-        length: i64,
-        path: Vec<String>,
+    pub struct FileInfo {
+        pub length: i64,
+        pub path: Vec<String>,
     }
 
     #[derive(Serialize, Deserialize, Debug)]
@@ -38,14 +37,12 @@ pub mod torrent {
     }
 
     pub struct Torrent {
-        announce: String,
-        piece_length: i64,
-        info_hash: String,
-        pieces: Vec<[u8; 20]>,
-        files: Vec<FileInfo>,
-        peer_id: String,
-        interval: Option<i64>,
-        peer_list: Option<Vec<String>>,
+        pub announce: String,
+        pub piece_length: i64,
+        pub info_hash: Vec<u8>,
+        pub pieces: Vec<[u8; 20]>,
+        pub files: Vec<FileInfo>,
+        pub peer_id: Vec<u8>,
     }
 
     pub fn split_hash(pieces: Vec<u8>) -> Vec<[u8; 20]> {
@@ -83,21 +80,15 @@ pub mod torrent {
                 }]
             });
 
-            let h = hash.result();
-            println!("{:?}", h);
-            let h = url::form_urlencoded::byte_serialize(h.as_slice()).collect::<Vec<_>>().concat();
-            println!("{:?}", h);
+            let id: [u8; 20] = rand::random();
 
             Ok(Torrent {
                 announce: f.announce,
                 piece_length: f.info.piece_length,
-                info_hash: h,
-                // pieces: split_hash(f.info.pieces.into_vec()),
-                pieces: Vec::new(),
+                info_hash: hash.result().as_slice().to_vec(),
+                pieces: split_hash(f.info.pieces.into_vec()),
                 files,
-                peer_id: String::new(),
-                interval: None,
-                peer_list: None,
+                peer_id: id.as_ref().to_vec(),
             })
         } else {
             Err("Can't parse torrent file")
@@ -105,23 +96,9 @@ pub mod torrent {
     }
 
     impl Torrent {
-        async fn get_peerlist(&mut self) {
-            let client = Client::new();
-            let param = [("info_hash", self.info_hash.clone()), ("peer_id", self.peer_id.clone()), ("port", String::from("2222")), ("uploaded", String::from("0")), ("downloaded", String::from("0")), ("compact", String::from("1")), ("left", String::from(format!("{}", self.piece_length)))];
-            let res = client
-                .get(self.announce.as_str())
-                .query(&param)
-                .send()
-                .await;
-
-            println!("{:?}", res);
-            if let Ok(r) = res {
-                println!("{}", r.text().await.unwrap());
-            }
-        }
-
-        pub async fn download(&mut self) {
-            self.get_peerlist().await;
+        pub async fn download(self) {
+            let mut r = tracker::downloader::Downloader::from_file(self);
+            r.download().await;
         }
     }
 }
