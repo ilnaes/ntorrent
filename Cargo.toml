@@ -13,6 +13,7 @@ serde = { version = "^1.0.0", features = ["derive"] }
 rand = "0.7.3"
 reqwest = "0.10.1"
 tokio = { version = "0.2.11", features = ["full"] }
-hex = "0.4.2"
 sha-1 = "0.8.2"
 url = "2.1.1"
+byteorder = "1.3.4"
+async-std = "1.5.0"

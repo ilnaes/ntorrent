@@ -1,9 +1,9 @@
 pub mod torrent {
     use crate::tracker;
     use sha1::{Sha1, Digest};
+    use std::fs;
     use serde::{Deserialize, Serialize};
     use serde_bytes::ByteBuf;
-    use std::fs;
 
     #[derive(Serialize, Deserialize, Debug)]
     pub struct FileInfo {
@@ -31,7 +31,7 @@ pub mod torrent {
 
     impl TorrentFile {
         fn new(s: &str) -> Result<TorrentFile, serde_bencode::error::Error> {
-            let contents = fs::read(&s).unwrap();
+            let contents = fs::read(&s).expect("Could not read file!");
             serde_bencode::de::from_bytes(contents.as_slice())
         }
     }
@@ -50,8 +50,6 @@ pub mod torrent {
         let mut res: Vec<[u8; 20]> = Vec::with_capacity(num_pieces);
         let arr = pieces.as_slice();
 
-        println!("{}", num_pieces);
-
         for i in 0..num_pieces {
             res.push([0; 20]);
             let j = 20 * i;
@@ -66,33 +64,31 @@ pub mod torrent {
     }
 
     pub fn new(s: &str) -> Result<Torrent, &str> {
-        if let Ok(f) = TorrentFile::new(s) {
-            // calculate info hash
-            let mut hash = Sha1::new();
-            let info = serde_bencode::to_bytes(&f.info).unwrap();
-            hash.input(info.as_slice());
+        let f = TorrentFile::new(s).expect("Could not parse torrent file!");
 
-            // if only one file, create new FileInfo
-            let files = f.info.files.unwrap_or({
-                vec![FileInfo {
-                    length: f.info.length.unwrap(),
-                    path: vec![f.info.name],
-                }]
-            });
+        // calculate info hash
+        let mut hash = Sha1::new();
+        let info = serde_bencode::to_bytes(&f.info).unwrap();
+        hash.input(info.as_slice());
 
-            let id: [u8; 20] = rand::random();
+        // if only one file, create new FileInfo
+        let files = f.info.files.unwrap_or({
+            vec![FileInfo {
+                length: f.info.length.unwrap(),
+                path: vec![f.info.name],
+            }]
+        });
 
-            Ok(Torrent {
-                announce: f.announce,
-                piece_length: f.info.piece_length,
-                info_hash: hash.result().as_slice().to_vec(),
-                pieces: split_hash(f.info.pieces.into_vec()),
-                files,
-                peer_id: id.as_ref().to_vec(),
-            })
-        } else {
-            Err("Can't parse torrent file")
-        }
+        let id: [u8; 20] = rand::random();
+
+        Ok(Torrent {
+            announce: f.announce,
+            piece_length: f.info.piece_length,
+            info_hash: hash.result().as_slice().to_vec(),
+            pieces: split_hash(f.info.pieces.into_vec()),
+            files,
+            peer_id: id.as_ref().to_vec(),
+        })
     }
 
     impl Torrent {

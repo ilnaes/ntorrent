@@ -3,6 +3,7 @@ use std::process;
 
 mod torrent_file;
 mod tracker;
+mod messages;
 
 use crate::torrent_file::torrent;
 
