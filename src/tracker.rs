@@ -6,9 +6,11 @@ pub mod downloader {
     use std::io::Cursor;
     use async_std::task;
     use std::time::Duration;
+    use std::net::TcpStream;
+    use std::io::prelude::*;
 
     pub struct Downloader {
-        torrent: torrent::Torrent,
+        pub torrent: torrent::Torrent,
         interval: u64,
         peer_list: Vec<String>,
         uploaded: i64,
@@ -32,7 +34,7 @@ pub mod downloader {
 
         for _ in 0..n {
             let mut s = String::new();
-            for _ in 0..3 {
+            for _ in 0..4 {
                 s.push_str(&format!("{}.", cx.read_u8().unwrap()));
             }
             s.pop();
@@ -57,15 +59,30 @@ pub mod downloader {
             }
         }
 
-        pub async fn download(&mut self) {
+        pub async fn poll_peerlist(&mut self) {
             self.get_peerlist().await;
-            tokio::join!(self.poll_peerlist());
+                // task::sleep(Duration::from_secs(self.interval)).await;
         }
 
-        async fn poll_peerlist(&mut self) {
-            loop {
-                task::sleep(Duration::from_secs(self.interval)).await;
-                self.get_peerlist().await;
+
+        pub async fn download(&mut self) {
+            self.get_peerlist().await;
+
+            let h = messages::Handshake::from(&self.torrent);
+
+            let mut stream = TcpStream::connect(self.peer_list[0].clone()).expect("Could not connect to peer");
+
+            let mut buf = [0; 128];
+
+            stream.write(h.serialize().as_slice()).unwrap();
+            stream.read(&mut buf).unwrap();
+
+            if let Some(h) = messages::Handshake::deserialize(buf.to_vec()) {
+                if h.info_hash != self.torrent.info_hash {
+                    println!("BAD!");
+                } else {
+                    println!("GOOD!");
+                }
             }
         }
 
@@ -79,7 +96,10 @@ pub mod downloader {
                             ("uploaded", self.uploaded),
                             ("downloaded", self.downloaded),
                             ("compact", 1),
-                            ("left", self.torrent.piece_length)];
+                            ("left", self.torrent.files
+                                        .iter()
+                                        .map(|x| x.length)
+                                        .fold(0, |x,y| x+y))];
 
             let client = Client::new();
             let res = client
