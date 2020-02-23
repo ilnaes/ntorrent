@@ -1,11 +1,12 @@
 use std::env;
 use std::process;
+use crate::client::Client;
 
-mod torrent_file;
-mod tracker;
+mod torrents;
+mod client;
 mod messages;
-
-use crate::torrent_file::torrent;
+mod peerlist;
+mod utils;
 
 #[tokio::main]
 async fn main() {
@@ -16,10 +17,7 @@ async fn main() {
         process::exit(0);
     }
 
-    let t = torrent::new(&args[1]).unwrap_or_else(|err| {
-        println!("{}", err);
-        process::exit(0);
-    });
+    let mut t = Client::new(&args[1]);
 
     t.download().await;
 }

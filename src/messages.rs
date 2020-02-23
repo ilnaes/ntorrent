@@ -1,4 +1,4 @@
-use crate::torrent_file::torrent::Torrent;
+use crate::torrents::Torrent;
 use serde::{Deserialize, Serialize};
 use serde_bytes::ByteBuf;
 
@@ -48,5 +48,35 @@ impl Handshake {
             info_hash: buf[28..48].to_vec(),
             peer_id: buf[48..68].to_vec(),
         })
+    }
+}
+
+pub enum MessageID {
+    Choke,
+    Unchoke,
+    Bitfield,
+    Interested,
+    NotInterested,
+    Request,
+    Have,
+    Piece,
+    Cancel,
+}
+
+pub struct Message {
+    message_id: MessageID,
+    payload: Vec<u8>,
+}
+
+impl Message {
+    pub fn serialize(&self) -> Vec<u8> {
+        Vec::new()
+    }
+
+    pub fn deserialize(msg: Vec<u8>) -> Message {
+        Message {
+            message_id: MessageID::Choke,
+            payload: Vec::new(),
+        }
     }
 }
