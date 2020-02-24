@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_bytes::ByteBuf;
 use sha1::{Digest, Sha1};
+use std::collections::VecDeque;
 use std::fs;
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -38,25 +39,26 @@ pub struct Torrent {
     pub announce: String,
     pub piece_length: i64,
     pub info_hash: Vec<u8>,
-    pub pieces: Vec<[u8; 20]>,
+    pub pieces: VecDeque<[u8; 20]>,
     pub files: Vec<FileInfo>,
     pub peer_id: Vec<u8>,
 }
 
-pub fn split_hash(pieces: Vec<u8>) -> Vec<[u8; 20]> {
+pub fn split_hash(pieces: Vec<u8>) -> VecDeque<[u8; 20]> {
     let num_pieces = (pieces.len() / 20) + 1;
-    let mut res: Vec<[u8; 20]> = Vec::with_capacity(num_pieces);
+    let mut res: VecDeque<[u8; 20]> = VecDeque::with_capacity(num_pieces);
     let arr = pieces.as_slice();
 
     for i in 0..num_pieces {
-        res.push([0; 20]);
+        let mut new = [0; 20];
         let j = 20 * i;
         for k in 0..20 {
             if j + k > pieces.len() - 1 {
                 break;
             }
-            res[i][k] = arr[j + k]
+            new[k] = arr[j + k]
         }
+        res.push_back(new);
     }
     res
 }

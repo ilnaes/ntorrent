@@ -6,7 +6,6 @@ use crate::client::Client;
 use crate::messages;
 use byteorder::{BigEndian, ReadBytesExt};
 use std::io::Cursor;
-use async_std::task;
 use std::time::Duration;
 
 pub struct Peerlist {
@@ -58,7 +57,7 @@ impl Peerlist {
     pub async fn poll_peerlist(&mut self) {
         loop {
             self.get_peerlist().await;
-            task::sleep(Duration::from_secs(self.interval)).await;
+            tokio::time::delay_for(Duration::from_secs(self.interval)).await;
         }
     }
 
@@ -89,16 +88,10 @@ impl Peerlist {
             .await
             .expect("Could not parse tracker response!");
 
-        let d: Result<messages::TrackerResponse, serde_bencode::error::Error> = serde_bencode::de::from_bytes(&res);
-        if let Ok(f) = d {
-            self.interval = f.interval;
-            {
-                let mut l = self.list.lock().await;
-                *l = parse_peerlist(f.peers.to_vec());
-                println!("{:?}", *l);
-            }
-        } else {
-            panic!("Could not parse tracker response!");
-        }
+        let res: messages::TrackerResponse = serde_bencode::de::from_bytes(&res)
+                                                .expect("Could not parse tracker response!");
+        let mut l = self.list.lock().await;
+        *l = parse_peerlist(res.peers.to_vec());
+        println!("{:?}", *l);
     }
 }
