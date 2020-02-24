@@ -7,6 +7,7 @@ use crate::messages;
 use byteorder::{BigEndian, ReadBytesExt};
 use std::io::Cursor;
 use std::time::Duration;
+use std::collections::VecDeque;
 
 pub struct Peerlist {
     progress: Arc<Mutex<Progress>>,
@@ -15,17 +16,17 @@ pub struct Peerlist {
     info_hash: Vec<u8>,
     peer_id: Vec<u8>,
     port: i64,
-    list: Arc<Mutex<Vec<String>>>,
+    list: Arc<Mutex<VecDeque<String>>>,
 }
 
-fn parse_peerlist(buf: Vec<u8>) -> Vec<String> {
+fn parse_peerlist(buf: Vec<u8>) -> VecDeque<String> {
     if buf.len() % 6 != 0 {
         panic!("Peer list not correct length!");
     }
 
     let n = buf.len() / 6;
     let mut cx = Cursor::new(buf);
-    let mut res = Vec::new();
+    let mut res = VecDeque::new();
 
     for _ in 0..n {
         let mut s = String::new();
@@ -36,7 +37,7 @@ fn parse_peerlist(buf: Vec<u8>) -> Vec<String> {
         s.push(':');
         s.push_str(&format!("{}", cx.read_u16::<BigEndian>().unwrap()));
 
-        res.push(s);
+        res.push_back(s);
     }
     res
 }

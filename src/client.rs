@@ -8,6 +8,7 @@ use tokio::sync::Mutex;
 // use std::io::Cursor;
 // use std::net::TcpStream;
 use std::sync::Arc;
+use std::collections::VecDeque;
 
 pub struct Progress {
     pub uploaded: i64,
@@ -18,7 +19,7 @@ pub struct Progress {
 pub struct Client {
     pub torrent: Torrent,
     pub handshake: Vec<u8>,
-    pub peer_list: Arc<Mutex<Vec<String>>>,
+    pub peer_list: Arc<Mutex<VecDeque<String>>>,
     pub progress: Arc<Mutex<Progress>>,
     pub port: i64,
 }
@@ -30,10 +31,11 @@ impl Client {
 
         Client {
             torrent,
-            peer_list: Arc::new(Mutex::new(Vec::new())),
+            peer_list: Arc::new(Mutex::new(VecDeque::new())),
             progress: Arc::new(Mutex::new(Progress {
                 uploaded: 0,
                 downloaded: 0,
+                // TODO: figure out left
                 left: 0,
             })),
             port: 2222,
