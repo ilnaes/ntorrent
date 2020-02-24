@@ -7,6 +7,7 @@ mod client;
 mod messages;
 mod peerlist;
 mod utils;
+mod downloader;
 
 #[tokio::main]
 async fn main() {

@@ -1,18 +1,22 @@
 use crate::client::Progress;
-use std::sync::{Arc, Mutex};
+use tokio::sync::Mutex;
+use std::sync::Arc;
 use crate::utils::serialize_bytes;
+use crate::client::Client;
 use crate::messages;
 use byteorder::{BigEndian, ReadBytesExt};
 use std::io::Cursor;
+use async_std::task;
+use std::time::Duration;
 
 pub struct Peerlist {
     progress: Arc<Mutex<Progress>>,
-    list: Vec<String>,
     interval: u64,
     announce: String,
     info_hash: Vec<u8>,
     peer_id: Vec<u8>,
     port: i64,
+    list: Arc<Mutex<Vec<String>>>,
 }
 
 fn parse_peerlist(buf: Vec<u8>) -> Vec<String> {
@@ -39,6 +43,25 @@ fn parse_peerlist(buf: Vec<u8>) -> Vec<String> {
 }
 
 impl Peerlist {
+    pub fn from(c: &Client) -> Peerlist {
+        Peerlist {
+            list: Arc::clone(&c.peer_list),
+            progress: Arc::clone(&c.progress),
+            interval: 0,
+            port: c.port,
+            info_hash: c.torrent.info_hash.clone(),
+            peer_id: c.torrent.peer_id.clone(),
+            announce: c.torrent.announce.clone(),
+        }
+    }
+
+    pub async fn poll_peerlist(&mut self) {
+        loop {
+            self.get_peerlist().await;
+            task::sleep(Duration::from_secs(self.interval)).await;
+        }
+    }
+
     async fn get_peerlist(&mut self) {
         // manually encode bytes
         let url = format!("{}?info_hash={}&peer_id={}",
@@ -49,7 +72,7 @@ impl Peerlist {
                         ("compact", 1)];
 
         {
-            let p = self.progress.lock().unwrap();
+            let p = self.progress.lock().await;
             params.extend(vec![("uploaded", p.uploaded),
                             ("downloaded", p.downloaded),
                             ("left", p.left)]);
@@ -69,8 +92,11 @@ impl Peerlist {
         let d: Result<messages::TrackerResponse, serde_bencode::error::Error> = serde_bencode::de::from_bytes(&res);
         if let Ok(f) = d {
             self.interval = f.interval;
-            self.list = parse_peerlist(f.peers.to_vec());
-            println!("{:?}", self.list);
+            {
+                let mut l = self.list.lock().await;
+                *l = parse_peerlist(f.peers.to_vec());
+                println!("{:?}", *l);
+            }
         } else {
             panic!("Could not parse tracker response!");
         }
