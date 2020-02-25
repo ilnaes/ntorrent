@@ -34,8 +34,8 @@ impl Manager {
         }
         let (tx, mut rx) = mpsc::channel(n);
         
-        for _ in 0..self.nworkers {
-            let w = Worker::from(&self, tx.clone());
+        for i in 0..self.nworkers {
+            let mut w = Worker::from(&self, tx.clone(), i);
             tokio::spawn(async move {
                 w.download().await;
             });

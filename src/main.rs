@@ -9,6 +9,7 @@ mod peerlist;
 mod utils;
 mod downloader;
 mod worker;
+mod err;
 
 #[tokio::main]
 async fn main() {

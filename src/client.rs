@@ -27,6 +27,7 @@ pub struct Client {
 impl Client {
     pub fn new(s: &str) -> Client {
         let torrent = Torrent::new(s);
+        let left = torrent.files.iter().map(|x| x.length).fold(0, |a,b| a+b);
         let handshake = messages::Handshake::from(&torrent).serialize();
 
         Client {
@@ -35,8 +36,7 @@ impl Client {
             progress: Arc::new(Mutex::new(Progress {
                 uploaded: 0,
                 downloaded: 0,
-                // TODO: figure out left
-                left: 0,
+                left
             })),
             port: 2222,
             handshake,

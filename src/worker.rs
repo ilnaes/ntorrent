@@ -1,4 +1,5 @@
 use crate::client::Progress;
+use crate::err::StreamError;
 use crate::downloader;
 use crate::torrents;
 use crate::messages;
@@ -12,45 +13,58 @@ use tokio::time::timeout;
 use std::error::Error;
 
 pub struct Worker {
+    id: u64,
     tx: mpsc::Sender<Vec<u8>>,
     progress: Arc<Mutex<Progress>>,
     peers: Arc<Mutex<VecDeque<String>>>,
     work: Arc<Mutex<VecDeque<torrents::Piece>>>,
     handshake: Vec<u8>,
     info_hash: Vec<u8>,
+    stream: Option<TcpStream>,
 }
 
 impl Worker {
-    pub fn from(mgr: &downloader::Manager, tx: mpsc::Sender<Vec<u8>>) -> Worker {
+    pub fn from(mgr: &downloader::Manager, tx: mpsc::Sender<Vec<u8>>, i: u64) -> Worker {
         Worker {
+            id: i+1,
             tx,
             progress: Arc::clone(&mgr.progress),
             peers: Arc::clone(&mgr.peer_list),
             work: Arc::clone(&mgr.pieces),
             handshake: mgr.handshake.clone(),
             info_hash: mgr.info_hash.clone(),
+            stream: None,
         }
     }
 
+    async fn read_message(&mut self) -> Result<messages::Message, Box<dyn Error>> {
+        if let Some(s) = &mut self.stream {
+            let len = timeout(Duration::from_secs(5), s.read_u8()).await??;
+        }
+        return Err(Box::new(StreamError))
+    }
+
     // tries to connect to ip and handshake (with timeouts)
-    pub async fn handshake(&self, ip: String) -> Result<TcpStream, Box<dyn Error>> {
-        let mut s = timeout(Duration::from_secs(5), TcpStream::connect(ip)).await??;
+    async fn handshake(&self, ip: String) -> Result<TcpStream, Box<dyn Error>> {
+        println!("Worker {} attempting to connect to {}", self.id, ip);
+        let mut s = timeout(Duration::from_secs(5), TcpStream::connect(ip.clone())).await??;
 
         let mut buf = [0; 128];
+        println!("Worker {} attempting to handshake {}", self.id, ip);
         timeout(Duration::from_secs(5), s.write_all(self.handshake.as_slice())).await??;
         timeout(Duration::from_secs(5), s.read(&mut buf)).await??;
 
         if let Some(h) = messages::Handshake::deserialize(buf.to_vec()) {
             if h.info_hash != self.info_hash {
-                return Err(Box::new(std::io::Error::from_raw_os_error(22)))
+                return Err(Box::new(StreamError))
             }
+
         }
         Ok(s)
-
     }
 
     // repeatedly attempts to connect to a peer and handshake until success
-    pub async fn connect(&self) -> TcpStream {
+    async fn connect(&mut self) {
         loop {
             let ip;
             {
@@ -66,14 +80,17 @@ impl Worker {
             }
 
             if let Ok(s) = self.handshake(ip).await {
-                return s
+                println!("Worker {} handshook", self.id);
+                self.stream = Some(s);
+
+                let msg = self.read_message();
+            } else {
+                println!("Worker {} not connected", self.id);
             }
         }
     }
     
-    pub async fn download(&self) {
-        loop {
-            let mut stream = self.connect().await;
-        }
+    pub async fn download(&mut self) {
+        self.connect().await;
     }
 }

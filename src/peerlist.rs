@@ -57,7 +57,9 @@ impl Peerlist {
 
     pub async fn poll_peerlist(&mut self) {
         loop {
+            println!("Getting peerlist");
             self.get_peerlist().await;
+            println!("Got peerlist");
             tokio::time::delay_for(Duration::from_secs(self.interval)).await;
         }
     }
@@ -93,6 +95,7 @@ impl Peerlist {
                                                 .expect("Could not parse tracker response!");
         let mut l = self.list.lock().await;
         *l = parse_peerlist(res.peers.to_vec());
-        println!("{:?}", *l);
+        self.interval = res.interval;
+        // println!("{:?}", *l);
     }
 }
