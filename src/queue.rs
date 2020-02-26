@@ -7,9 +7,9 @@ pub struct WorkQueue<T> {
 }
 
 impl<T> WorkQueue<T> {
-    pub async fn push(&mut self) {
-        // let mut q = self.q.lock().await;    
-        // q.push_back(x);
+    pub async fn push(&mut self, x: T) {
+        let mut q = self.q.lock().await;    
+        q.push_back(x);
     }
 
     pub async fn pop(&mut self) -> Option<T> {
@@ -17,8 +17,9 @@ impl<T> WorkQueue<T> {
         q.pop_front()
     }
     
-    pub fn replace(&mut self, q: VecDeque<T>) {
-        self.q = Arc::new(Mutex::new(q));
+    pub async fn replace(&mut self, q: VecDeque<T>) {
+        let mut val = self.q.lock().await;
+        *val = q
     }
 
     pub fn new() -> WorkQueue<T> {

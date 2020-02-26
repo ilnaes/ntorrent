@@ -6,6 +6,7 @@ use crate::torrents;
 use crate::worker::Worker;
 use crate::queue::WorkQueue;
 
+// possibly unnecessary
 pub struct Manager {
     nworkers: u64,
     pub progress: Arc<Mutex<Progress>>,

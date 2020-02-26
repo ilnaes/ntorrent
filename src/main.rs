@@ -11,6 +11,7 @@ mod downloader;
 mod worker;
 mod err;
 mod queue;
+mod consts;
 
 #[tokio::main]
 async fn main() {
