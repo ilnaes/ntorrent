@@ -4,11 +4,12 @@ use tokio::sync::{mpsc, Mutex};
 use std::collections::VecDeque;
 use crate::torrents;
 use crate::worker::Worker;
+use crate::queue::WorkQueue;
 
 pub struct Manager {
     nworkers: u64,
     pub progress: Arc<Mutex<Progress>>,
-    pub peer_list: Arc<Mutex<VecDeque<String>>>,
+    pub peer_list: WorkQueue<String>,
     pub pieces: Arc<Mutex<VecDeque<torrents::Piece>>>,
     pub handshake: Vec<u8>,
     pub info_hash: Vec<u8>,
@@ -19,7 +20,7 @@ impl Manager {
         Manager {
             nworkers,
             progress: Arc::clone(&c.progress),
-            peer_list: Arc::clone(&c.peer_list),
+            peer_list: c.peer_list.clone(),
             pieces: Arc::new(Mutex::new(c.torrent.pieces.clone())),
             handshake: c.handshake.clone(),
             info_hash: c.torrent.info_hash.clone(),

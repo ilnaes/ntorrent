@@ -1,6 +1,7 @@
 use crate::torrents::Torrent;
 use serde::{Deserialize, Serialize};
 use serde_bytes::ByteBuf;
+use tokio::net::TcpStream;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct TrackerResponse {
@@ -69,6 +70,8 @@ pub struct Message {
 }
 
 impl Message {
+    pub fn read_from(s: &mut TcpStream) {}
+
     pub fn serialize(&self) -> Vec<u8> {
         Vec::new()
     }

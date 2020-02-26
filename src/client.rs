@@ -2,13 +2,13 @@ use crate::messages;
 use crate::torrents::Torrent;
 use crate::peerlist::Peerlist;
 use crate::downloader::Manager;
+use crate::queue::WorkQueue;
 use tokio::sync::Mutex;
 // use byteorder::{BigEndian, ReadBytesExt};
 // use std::io::prelude::*;
 // use std::io::Cursor;
 // use std::net::TcpStream;
 use std::sync::Arc;
-use std::collections::VecDeque;
 
 pub struct Progress {
     pub uploaded: i64,
@@ -19,7 +19,7 @@ pub struct Progress {
 pub struct Client {
     pub torrent: Torrent,
     pub handshake: Vec<u8>,
-    pub peer_list: Arc<Mutex<VecDeque<String>>>,
+    pub peer_list: WorkQueue<String>,
     pub progress: Arc<Mutex<Progress>>,
     pub port: i64,
 }
@@ -32,7 +32,7 @@ impl Client {
 
         Client {
             torrent,
-            peer_list: Arc::new(Mutex::new(VecDeque::new())),
+            peer_list: WorkQueue::new(),
             progress: Arc::new(Mutex::new(Progress {
                 uploaded: 0,
                 downloaded: 0,

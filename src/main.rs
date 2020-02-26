@@ -10,6 +10,7 @@ mod utils;
 mod downloader;
 mod worker;
 mod err;
+mod queue;
 
 #[tokio::main]
 async fn main() {

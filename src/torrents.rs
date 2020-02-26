@@ -82,6 +82,7 @@ impl Torrent {
             }]
         });
 
+        // randomly generate id
         let id: [u8; 20] = rand::random();
 
         Torrent {
@@ -99,17 +100,20 @@ impl Torrent {
 mod tests {
     #[test]
     fn test_split() {
-        // let r = super::split_hash(vec![1, 2, 3]);
-        // assert_eq!(
-        //     r[0],
-        //     [1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-        // );
+        let r = super::split_hash(vec![1, 2, 3]);
+        assert_eq!(
+            r[0],
+            (
+                [1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                0
+            )
+        );
 
-        // let r = super::split_hash(vec![0; 39]);
-        // assert_eq!(r.len(), 2);
-        // assert_eq!(r[1].len(), 20);
+        let r = super::split_hash(vec![0; 39]);
+        assert_eq!(r.len(), 2);
+        assert_eq!(r[1].0.len(), 20);
 
-        // let r = super::split_hash(vec![0; 41]);
-        // assert_eq!(r.len(), 3);
+        let r = super::split_hash(vec![0; 41]);
+        assert_eq!(r.len(), 3);
     }
 }

@@ -1,9 +1,10 @@
 use crate::client::Progress;
-use tokio::sync::Mutex;
-use std::sync::Arc;
 use crate::utils::serialize_bytes;
 use crate::client::Client;
 use crate::messages;
+use crate::queue::WorkQueue;
+use tokio::sync::Mutex;
+use std::sync::Arc;
 use byteorder::{BigEndian, ReadBytesExt};
 use std::io::Cursor;
 use std::time::Duration;
@@ -16,7 +17,7 @@ pub struct Peerlist {
     info_hash: Vec<u8>,
     peer_id: Vec<u8>,
     port: i64,
-    list: Arc<Mutex<VecDeque<String>>>,
+    list: WorkQueue<String>,
 }
 
 fn parse_peerlist(buf: Vec<u8>) -> VecDeque<String> {
@@ -45,7 +46,7 @@ fn parse_peerlist(buf: Vec<u8>) -> VecDeque<String> {
 impl Peerlist {
     pub fn from(c: &Client) -> Peerlist {
         Peerlist {
-            list: Arc::clone(&c.peer_list),
+            list: c.peer_list.clone(),
             progress: Arc::clone(&c.progress),
             interval: 0,
             port: c.port,
@@ -93,8 +94,9 @@ impl Peerlist {
 
         let res: messages::TrackerResponse = serde_bencode::de::from_bytes(&res)
                                                 .expect("Could not parse tracker response!");
-        let mut l = self.list.lock().await;
-        *l = parse_peerlist(res.peers.to_vec());
+        // let mut l = self.list.get_queue().await;
+        // *l = parse_peerlist(res.peers.to_vec());
+        self.list.replace(parse_peerlist(res.peers.to_vec()));
         self.interval = res.interval;
         // println!("{:?}", *l);
     }

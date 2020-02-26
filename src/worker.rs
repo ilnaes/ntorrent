@@ -1,8 +1,9 @@
 use crate::client::Progress;
-use crate::err::StreamError;
+use crate::err::ConnectError;
 use crate::downloader;
 use crate::torrents;
 use crate::messages;
+use crate::queue::WorkQueue;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
@@ -16,7 +17,7 @@ pub struct Worker {
     id: u64,
     tx: mpsc::Sender<Vec<u8>>,
     progress: Arc<Mutex<Progress>>,
-    peers: Arc<Mutex<VecDeque<String>>>,
+    peers: WorkQueue<String>,
     work: Arc<Mutex<VecDeque<torrents::Piece>>>,
     handshake: Vec<u8>,
     info_hash: Vec<u8>,
@@ -29,7 +30,7 @@ impl Worker {
             id: i+1,
             tx,
             progress: Arc::clone(&mgr.progress),
-            peers: Arc::clone(&mgr.peer_list),
+            peers: mgr.peer_list.clone(),
             work: Arc::clone(&mgr.pieces),
             handshake: mgr.handshake.clone(),
             info_hash: mgr.info_hash.clone(),
@@ -41,35 +42,37 @@ impl Worker {
         if let Some(s) = &mut self.stream {
             let len = timeout(Duration::from_secs(5), s.read_u8()).await??;
         }
-        return Err(Box::new(StreamError))
+        return Err(Box::new(ConnectError))
     }
 
     // tries to connect to ip and handshake (with timeouts)
     async fn handshake(&self, ip: String) -> Result<TcpStream, Box<dyn Error>> {
         println!("Worker {} attempting to connect to {}", self.id, ip);
-        let mut s = timeout(Duration::from_secs(5), TcpStream::connect(ip.clone())).await??;
+        let mut s = timeout(Duration::from_secs(5), TcpStream::connect(ip)).await??;
 
         let mut buf = [0; 128];
-        println!("Worker {} attempting to handshake {}", self.id, ip);
+        println!("Worker {} attempting to handshake", self.id);
         timeout(Duration::from_secs(5), s.write_all(self.handshake.as_slice())).await??;
         timeout(Duration::from_secs(5), s.read(&mut buf)).await??;
 
         if let Some(h) = messages::Handshake::deserialize(buf.to_vec()) {
             if h.info_hash != self.info_hash {
-                return Err(Box::new(StreamError))
+                return Err(Box::new(ConnectError))
             }
 
         }
         Ok(s)
     }
 
+    async fn foo(&self) {}
+
     // repeatedly attempts to connect to a peer and handshake until success
     async fn connect(&mut self) {
         loop {
-            let ip;
+            let ip: String;
             {
                 loop {
-                    if let Some(s) = self.peers.lock().await.pop_front() {
+                    if let Some(s) = self.peers.pop().await {
                         ip = s;
                         break
                     } else {
@@ -79,13 +82,17 @@ impl Worker {
                 }
             }
 
-            if let Ok(s) = self.handshake(ip).await {
+            let res = self.handshake(ip.clone()).await.ok();
+
+            if let Some(s) = res {
                 println!("Worker {} handshook", self.id);
                 self.stream = Some(s);
 
                 let msg = self.read_message();
             } else {
                 println!("Worker {} not connected", self.id);
+                // put ip back
+                self.peers.push().await;
             }
         }
     }
