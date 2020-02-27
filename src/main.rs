@@ -12,6 +12,7 @@ mod worker;
 mod err;
 mod queue;
 mod consts;
+mod bitfield;
 
 #[tokio::main]
 async fn main() {
