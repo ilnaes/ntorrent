@@ -1,3 +1,4 @@
+use crate::queue::WorkQueue;
 use serde::{Deserialize, Serialize};
 use serde_bytes::ByteBuf;
 use sha1::{Digest, Sha1};
@@ -41,7 +42,7 @@ pub struct Torrent {
     pub announce: String,
     pub piece_length: i64,
     pub info_hash: Vec<u8>,
-    pub pieces: VecDeque<Piece>,
+    pub pieces: WorkQueue<Piece>,
     pub files: Vec<FileInfo>,
     pub peer_id: Vec<u8>,
 }
@@ -85,11 +86,13 @@ impl Torrent {
         // randomly generate id
         let id: [u8; 20] = rand::random();
 
+        println!("Piece length: {}", f.info.piece_length);
+
         Torrent {
             announce: f.announce,
             piece_length: f.info.piece_length,
             info_hash: hash.result().as_slice().to_vec(),
-            pieces: split_hash(f.info.pieces.into_vec()),
+            pieces: WorkQueue::from(split_hash(f.info.pieces.into_vec())),
             files,
             peer_id: id.as_ref().to_vec(),
         }

@@ -1,12 +1,11 @@
 use crate::client::Progress;
 use crate::err::ConnectError;
-use crate::downloader;
 use crate::torrents;
 use crate::messages;
 use crate::consts;
 use crate::bitfield;
+use crate::client;
 use crate::queue::WorkQueue;
-use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tokio::net::TcpStream;
@@ -26,16 +25,20 @@ pub struct Worker {
     stream: Option<TcpStream>,
 }
 
+enum State {
+    Choked
+}
+
 impl Worker {
-    pub fn from(mgr: &downloader::Manager, tx: mpsc::Sender<Vec<u8>>, i: u64) -> Worker {
+    pub fn from_client(c: &client::Client, tx: mpsc::Sender<Vec<u8>>, i: u64) -> Worker {
         Worker {
             id: i+1,
             tx,
-            progress: Arc::clone(&mgr.progress),
-            peers: mgr.peer_list.clone(),
-            work: mgr.pieces.clone(),
-            handshake: mgr.handshake.clone(),
-            info_hash: mgr.info_hash.clone(),
+            progress: Arc::clone(&c.progress),
+            peers: c.peer_list.clone(),
+            work: c.torrent.pieces.clone(),
+            handshake: c.handshake.clone(),
+            info_hash: c.torrent.info_hash.clone(),
             stream: None,
         }
     }
@@ -110,23 +113,50 @@ impl Worker {
             self.peers.push(ip).await;
         }
     }
+
+
+    // uses small state machine to download piece
+    // starting state: choked with no downloads
+    pub async fn download_piece(&mut self, piece: torrents::Piece) -> bool {
+        let mut state = State::Choked;
+        loop {
+            return false
+        }
+    }
     
     pub async fn download(&mut self) {
         let bf = self.connect().await;
         println!("Worker {} got bitfield", self.id);
 
-        let possible = self.work.find_first(|x| {
-            bf.has(x.1)
-        }).await;
-
-        if let Some(piece) = possible {
-            let response = self.send_message(messages::Message {
-                message_id: messages::MessageID::Interested,
-                payload: None,
+        let mut interested = false;
+        loop {
+            // find work if exists
+            let possible = self.work.find_first(|x| {
+                bf.has(x.1)
             }).await;
 
-            if let Err(_) = response {
-                return
+            if let Some(piece) = possible {
+                // send interested message
+                let response = if !interested {
+                    let res = self.send_message(messages::Message {
+                        message_id: messages::MessageID::Interested,
+                        payload: None,
+                    }).await.ok();
+
+                    if let Some(_) = res {
+                        interested = true;
+                    }
+                    res
+                } else {
+                    Some(())
+                };
+
+                if let Some(_) = response {
+                    // start state machine downloader
+                    self.download_piece(piece).await;
+                }
+            } else {
+                break
             }
         }
     }

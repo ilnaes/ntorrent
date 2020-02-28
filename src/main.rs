@@ -7,7 +7,6 @@ mod client;
 mod messages;
 mod peerlist;
 mod utils;
-mod downloader;
 mod worker;
 mod err;
 mod queue;
