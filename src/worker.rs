@@ -26,7 +26,8 @@ pub struct Worker {
 }
 
 enum State {
-    Choked
+    Choked,
+    Unchoked
 }
 
 impl Worker {
@@ -120,7 +121,15 @@ impl Worker {
     pub async fn download_piece(&mut self, piece: torrents::Piece) -> bool {
         let mut state = State::Choked;
         loop {
-            return false
+            let msg = self.read_message().await;
+            if let Ok(m) = msg {
+                match (state, m.message_id) {
+                    (State::Choked, messages::MessageID::Unchoke) => {
+                        state = State::Unchoked;
+                    },
+                    _ => return false
+                }
+            }
         }
     }
     
