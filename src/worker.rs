@@ -1,7 +1,7 @@
 use crate::client::Progress;
 use crate::err::ConnectError;
 use crate::torrents;
-use crate::messages;
+use crate::messages::{Message, Handshake, MessageID};
 use crate::consts;
 use crate::bitfield;
 use crate::client;
@@ -23,9 +23,11 @@ pub struct Worker {
     handshake: Vec<u8>,
     info_hash: Vec<u8>,
     stream: Option<TcpStream>,
+    current: Option<torrents::Piece>,
 }
 
 enum State {
+    Entry,
     Choked,
     Unchoked
 }
@@ -41,10 +43,11 @@ impl Worker {
             handshake: c.handshake.clone(),
             info_hash: c.torrent.info_hash.clone(),
             stream: None,
+            current: None,
         }
     }
 
-    async fn send_message(&mut self, m: messages::Message) -> Result<(), Box<dyn Error>> {
+    async fn send_message(&mut self, m: Message) -> Result<(), Box<dyn Error>> {
         if let Some(s) = &mut self.stream {
             timeout(consts::TIMEOUT, s.write_all(m.serialize().as_slice())).await??;
             return Ok(())
@@ -52,9 +55,9 @@ impl Worker {
         Err(Box::new(ConnectError))
     }
 
-    async fn read_message(&mut self) -> Result<messages::Message, Box<dyn Error>> {
+    async fn read_message(&mut self) -> Result<Message, Box<dyn Error>> {
         if let Some(s) = &mut self.stream {
-            return messages::Message::read_from(s).await;
+            return Message::read_from(s).await
         }
         Err(Box::new(ConnectError))
     }
@@ -67,7 +70,7 @@ impl Worker {
         timeout(consts::TIMEOUT, s.write_all(self.handshake.as_slice())).await??;
         timeout(consts::TIMEOUT, s.read(&mut buf)).await??;
 
-        if let Some(h) = messages::Handshake::deserialize(buf.to_vec()) {
+        if let Some(h) = Handshake::deserialize(buf.to_vec()) {
             if h.info_hash != self.info_hash {
                 return Err(Box::new(ConnectError))
             }
@@ -77,7 +80,7 @@ impl Worker {
 
     // repeatedly attempts to connect to a peer, handshake
     // and get bitfield until success
-    async fn connect(&mut self) -> bitfield::Bitfield {
+    async fn connect(&mut self) {
         loop {
             let ip: String;
             {
@@ -97,17 +100,7 @@ impl Worker {
 
             if let Some(s) = res {
                 self.stream = Some(s);
-
-                // get bitfield
-                let msg = self.read_message().await;
-                if let Ok(m) = msg {
-                    if m.message_id == messages::MessageID::Bitfield && m.payload != None {
-                        // TODO: verify bitfield
-                        return bitfield::Bitfield {
-                            bf: m.payload.unwrap(),
-                        }
-                    }
-                }
+                return;
             }
             println!("Worker {} not connected", self.id);
             // put ip back
@@ -115,54 +108,80 @@ impl Worker {
         }
     }
 
+    // sends requests and chooses new work piece if necessary
+    // returns false if no more work to be done
+    async fn manage_download(&mut self) -> bool {
+        false
+    }
 
-    // uses small state machine to download piece
-    // starting state: choked with no downloads
-    pub async fn download_piece(&mut self, piece: torrents::Piece) -> bool {
-        let mut state = State::Choked;
-        loop {
-            let msg = self.read_message().await;
-            if let Ok(m) = msg {
-                match (state, m.message_id) {
-                    (State::Choked, messages::MessageID::Unchoke) => {
-                        state = State::Unchoked;
-                    },
-                    _ => return false
-                }
-            }
-        }
+    async fn process_piece(&mut self, piece: Vec<u8>) {
     }
     
     pub async fn download(&mut self) {
-        let bf = self.connect().await;
+        self.connect().await;
         println!("Worker {} got bitfield", self.id);
 
-        let mut interested = false;
+        let mut state = State::Entry;
+        let mut bf = bitfield::Bitfield {
+            bf: Vec::new(),
+        };
+
         loop {
-            // find work if exists
-            let possible = self.work.find_first(|x| {
-                bf.has(x.1)
-            }).await;
+            let response = self.read_message().await.ok();
+            if let Some(msg) = response {
+                match state {
+                    State::Entry => {
+                        if msg.message_id == MessageID::Bitfield && msg.payload != None {
+                            bf.bf = msg.payload.unwrap();
+                        }
 
-            if let Some(piece) = possible {
-                // send interested message
-                let response = if !interested {
-                    let res = self.send_message(messages::Message {
-                        message_id: messages::MessageID::Interested,
-                        payload: None,
-                    }).await.ok();
+                        // find work if exists and send interested
+                        self.current = self.work.find_first(|x| bf.has(x.1)).await;
+                        println!("Worker {} attemping to download piece {:?}", self.id, self.current);
 
-                    if let Some(_) = res {
-                        interested = true;
-                    }
-                    res
-                } else {
-                    Some(())
-                };
+                        if self.current != None {
+                            let res = self.send_message(Message{
+                                message_id: MessageID::Interested,
+                                payload: None,
+                            }).await;
+                            if let Err(_) = res {
+                                break
+                            }
+                            state = State::Choked;
+                        } else {
+                            break
+                        }
+                    },
 
-                if let Some(_) = response {
-                    // start state machine downloader
-                    self.download_piece(piece).await;
+                    State::Choked => {
+                        match msg.message_id {
+                            MessageID::Unchoke => {
+                                state = State::Unchoked;
+                                if !self.manage_download().await {
+                                    break
+                                }
+                            },
+                            MessageID::Piece => {
+                                self.process_piece(msg.payload.unwrap()).await;
+                            },
+                            _ => ()
+                        }
+                    },
+
+                    State::Unchoked => {
+                        match msg.message_id {
+                            MessageID::Choke => {
+                                state = State::Choked;
+                            },
+                            MessageID::Piece => {
+                                self.process_piece(msg.payload.unwrap()).await;
+                                if !self.manage_download().await {
+                                    break
+                                }
+                            },
+                            _ => (),
+                        }
+                    },
                 }
             } else {
                 break
