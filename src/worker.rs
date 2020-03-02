@@ -24,6 +24,8 @@ pub struct Worker {
     info_hash: Vec<u8>,
     stream: Option<TcpStream>,
     current: Option<torrents::Piece>,
+    blocks_requested: i64,
+    blocks_received: i64,
 }
 
 enum State {
@@ -44,6 +46,8 @@ impl Worker {
             info_hash: c.torrent.info_hash.clone(),
             stream: None,
             current: None,
+            blocks_requested: 0,
+            blocks_received: 0,
         }
     }
 
@@ -100,6 +104,7 @@ impl Worker {
 
             if let Some(s) = res {
                 self.stream = Some(s);
+                // TODO: send bitfield
                 return;
             }
             println!("Worker {} not connected", self.id);
@@ -108,18 +113,27 @@ impl Worker {
         }
     }
 
-    // sends requests and chooses new work piece if necessary
+    // sends requests and pieces and chooses new work piece if necessary
     // returns false if no more work to be done
-    async fn manage_download(&mut self) -> bool {
+    async fn manage_io(&mut self, bf: &bitfield::Bitfield) -> bool {
+        if self.current == None {
+            self.current = self.work.find_first(|x| bf.has(x.1)).await;
+            self.blocks_requested = 0;
+            if self.current == None {
+                // no more work
+                return false
+            }
+        }
+
         false
     }
 
     async fn process_piece(&mut self, piece: Vec<u8>) {
     }
-    
+
     pub async fn download(&mut self) {
         self.connect().await;
-        println!("Worker {} got bitfield", self.id);
+        println!("Worker {} connected", self.id);
 
         let mut state = State::Entry;
         let mut bf = bitfield::Bitfield {
@@ -133,31 +147,33 @@ impl Worker {
                     State::Entry => {
                         if msg.message_id == MessageID::Bitfield && msg.payload != None {
                             bf.bf = msg.payload.unwrap();
-                        }
 
-                        // find work if exists and send interested
-                        self.current = self.work.find_first(|x| bf.has(x.1)).await;
-                        println!("Worker {} attemping to download piece {:?}", self.id, self.current);
+                            // find work if exists and send interested
+                            self.current = self.work.find_first(|x| bf.has(x.1)).await;
+                            println!("Worker {} attemping to download piece {:?}", self.id, self.current);
 
-                        if self.current != None {
-                            let res = self.send_message(Message{
-                                message_id: MessageID::Interested,
-                                payload: None,
-                            }).await;
-                            if let Err(_) = res {
+                            if self.current != None {
+                                let res = self.send_message(Message{
+                                    message_id: MessageID::Interested,
+                                    payload: None,
+                                }).await.ok();
+
+                                if res == None {
+                                    break
+                                }
+                                state = State::Choked;
+                            } else {
                                 break
                             }
-                            state = State::Choked;
-                        } else {
-                            break
                         }
                     },
 
                     State::Choked => {
                         match msg.message_id {
                             MessageID::Unchoke => {
+                                println!("Worker {} unchoked!", self.id);
                                 state = State::Unchoked;
-                                if !self.manage_download().await {
+                                if !self.manage_io(&bf).await {
                                     break
                                 }
                             },
@@ -171,11 +187,12 @@ impl Worker {
                     State::Unchoked => {
                         match msg.message_id {
                             MessageID::Choke => {
+                                println!("Worker {} choked!", self.id);
                                 state = State::Choked;
                             },
                             MessageID::Piece => {
                                 self.process_piece(msg.payload.unwrap()).await;
-                                if !self.manage_download().await {
+                                if !self.manage_io(&bf).await {
                                     break
                                 }
                             },
@@ -184,8 +201,16 @@ impl Worker {
                     },
                 }
             } else {
+                println!("Worker {} timed out reading", self.id);
                 break
             }
+        }
+
+        println!("Worker {} breaking off", self.id);
+
+        // if there is still work, return it to queue
+        if let Some(piece) = self.current.take() {
+            self.work.push(piece).await;
         }
     }
 }

@@ -7,9 +7,9 @@ use tokio::sync::{Mutex, mpsc};
 use std::sync::Arc;
 
 pub struct Progress {
-    pub uploaded: i64,
-    pub downloaded: i64,
-    pub left: i64,
+    pub uploaded: usize,
+    pub downloaded: usize,
+    pub left: usize,
 }
 
 pub struct Client {
@@ -57,10 +57,4 @@ impl Client {
         let mut peerlist = Peerlist::from(&self);
         tokio::join!(peerlist.poll_peerlist(), self.manage_workers());
     }
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn peerlist_test() {}
 }

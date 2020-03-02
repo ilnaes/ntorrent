@@ -76,9 +76,9 @@ impl Peerlist {
 
         {
             let p = self.progress.lock().await;
-            params.extend(vec![("uploaded", p.uploaded),
-                            ("downloaded", p.downloaded),
-                            ("left", p.left)]);
+            params.extend(vec![("uploaded", p.uploaded as i64),
+                            ("downloaded", p.downloaded as i64),
+                            ("left", p.left as i64)]);
         }
 
         let client = reqwest::Client::new();
