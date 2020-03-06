@@ -6,6 +6,7 @@ use crate::consts;
 use crate::bitfield;
 use crate::client;
 use crate::queue::WorkQueue;
+use crate::utils::calc_request;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tokio::net::TcpStream;
@@ -23,9 +24,10 @@ pub struct Worker {
     handshake: Vec<u8>,
     info_hash: Vec<u8>,
     stream: Option<TcpStream>,
+
     current: Option<torrents::Piece>,
-    blocks_requested: i64,
-    blocks_received: i64,
+    requested: usize,
+    received: usize,
 }
 
 enum State {
@@ -46,8 +48,8 @@ impl Worker {
             info_hash: c.torrent.info_hash.clone(),
             stream: None,
             current: None,
-            blocks_requested: 0,
-            blocks_received: 0,
+            requested: 0,
+            received: 0,
         }
     }
 
@@ -118,14 +120,34 @@ impl Worker {
     async fn manage_io(&mut self, bf: &bitfield::Bitfield) -> bool {
         if self.current == None {
             self.current = self.work.find_first(|x| bf.has(x.1)).await;
-            self.blocks_requested = 0;
+            self.requested = 0;
             if self.current == None {
                 // no more work
                 return false
             }
         }
 
-        false
+        if let Some(piece) = self.current {
+            while self.requested < self.received + consts::MAXREQUESTS && self.requested * consts::BLOCKSIZE< piece.2 {
+                if let Ok(msg) = calc_request(piece.1, self.requested, piece.2) {
+                    let res = self.send_message(Message {
+                        message_id: MessageID::Request,
+                        payload: Some(msg),
+                    }).await.ok();
+
+                    if res == None {
+                        // error
+                        return false
+                    }
+                    self.requested += 1;
+                } else {
+                    // error
+                    return false
+                }
+            }
+        }
+
+        true
     }
 
     async fn process_piece(&mut self, piece: Vec<u8>) {
