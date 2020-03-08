@@ -94,10 +94,8 @@ impl Peerlist {
 
         let res: messages::TrackerResponse = serde_bencode::de::from_bytes(&res)
                                                 .expect("Could not parse tracker response!");
-        // let mut l = self.list.get_queue().await;
-        // *l = parse_peerlist(res.peers.to_vec());
+
         self.list.replace(parse_peerlist(res.peers.to_vec())).await;
         self.interval = res.interval;
-        // println!("{:?}", *l);
     }
 }

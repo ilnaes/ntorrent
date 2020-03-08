@@ -6,7 +6,7 @@ use crate::consts;
 use crate::bitfield;
 use crate::client;
 use crate::queue::WorkQueue;
-use crate::utils::calc_request;
+use crate::utils::{calc_request, read_piece};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tokio::net::TcpStream;
@@ -116,7 +116,7 @@ impl Worker {
     }
 
     // sends requests and pieces and chooses new work piece if necessary
-    // returns false if no more work to be done
+    // returns false if error or no more work to be done
     async fn manage_io(&mut self, bf: &bitfield::Bitfield) -> bool {
         if self.current == None {
             self.current = self.work.find_first(|x| bf.has(x.1)).await;
@@ -129,16 +129,15 @@ impl Worker {
 
         if let Some(piece) = self.current {
             while self.requested < self.received + consts::MAXREQUESTS && self.requested * consts::BLOCKSIZE< piece.2 {
-                if let Ok(msg) = calc_request(piece.1, self.requested, piece.2) {
-                    let res = self.send_message(Message {
+                if let Some(msg) = calc_request(piece.1, self.requested, piece.2) {
+                    println!("Worker {} requesting index {}, start {}", self.id, piece.1, self.requested);
+                    if self.send_message(Message {
                         message_id: MessageID::Request,
                         payload: Some(msg),
-                    }).await.ok();
-
-                    if res == None {
-                        // error
+                    }).await.ok() == None {
                         return false
                     }
+
                     self.requested += 1;
                 } else {
                     // error
@@ -151,6 +150,7 @@ impl Worker {
     }
 
     async fn process_piece(&mut self, piece: Vec<u8>) {
+        println!("Worker {} reading piece {:?}", self.id, read_piece(piece));
     }
 
     pub async fn download(&mut self) {
@@ -223,7 +223,7 @@ impl Worker {
                     },
                 }
             } else {
-                println!("Worker {} timed out reading", self.id);
+                println!("Worker {} read error", self.id);
                 break
             }
         }

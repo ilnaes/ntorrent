@@ -7,7 +7,7 @@ use tokio::net::TcpStream;
 use tokio::time::timeout;
 use tokio::prelude::*;
 use std::error::Error;
-use byteorder::{BigEndian, WriteBytesExt, ReadBytesExt};
+use byteorder::{BigEndian, WriteBytesExt};
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct TrackerResponse {
@@ -113,13 +113,21 @@ impl Message {
     }
 
     pub async fn read_from(s: &mut TcpStream) -> Result<Message, Box<dyn Error>> {
-        let len: usize = timeout(consts::TIMEOUT, s.read_u32()).await?? as usize;
+        // let len: usize = timeout(consts::TIMEOUT, s.read_u32()).await?? as usize;
+        let len: u32 = match s.read_u32().await {
+            Ok(l) => l,
+            Err(e) => {
+                panic!("{:?}", e)
+            }
+        };
+
+        println!("Reading {} len", len);
 
         if len == 0 {
             return  Ok(Message { message_id: MessageID::KeepAlive, payload: None })
         }
 
-        let mut buf = vec![0; len];
+        let mut buf = vec![0; len as usize];
         timeout(consts::TIMEOUT, s.read_exact(&mut buf)).await??;
         Ok(Message{
             message_id: Message::get_id(buf[0])?,
@@ -133,9 +141,9 @@ impl Message {
         }
 
         let len = if let Some(v) = &self.payload {
-            5 + v.len()
+            1 + v.len()
         } else {
-            5
+            1
         };
 
         let mut res = vec![];
@@ -144,6 +152,7 @@ impl Message {
         if let Some(v) = &self.payload {
             res.extend(v);
         }
+        println!("{:?}", res);
         res
     }
 }

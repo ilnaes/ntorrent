@@ -28,7 +28,7 @@ impl Client {
         let handshake = messages::Handshake::from(&torrent).serialize();
 
         Client {
-            nworkers: 4,
+            nworkers: 1,
             torrent,
             peer_list: WorkQueue::new(),
             progress: Arc::new(Mutex::new(Progress {
