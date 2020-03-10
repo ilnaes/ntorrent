@@ -36,7 +36,15 @@ impl TorrentFile {
     }
 }
 
-pub type Piece = ([u8; 20], usize, usize);
+// hash * index * length
+#[derive(PartialEq, Debug, Clone)]
+pub struct Piece(pub [u8; 20], pub usize, pub usize);
+
+impl Piece {
+    pub fn verify(&self, buf: &Vec<u8>) -> bool {
+        true
+    }
+}
 
 pub struct Torrent {
     pub announce: String,
@@ -67,9 +75,9 @@ pub fn split_hash(pieces: Vec<u8>, piece_length: usize, length: usize) -> VecDeq
         }
 
         if i == num_pieces - 1 && length % piece_length != 0 {
-            res.push_back((new, i, length % piece_length));
+            res.push_back(Piece(new, i, length % piece_length));
         } else {
-            res.push_back((new, i, piece_length));
+            res.push_back(Piece(new, i, piece_length));
         }
     }
     res
@@ -121,7 +129,7 @@ mod tests {
         let r = super::split_hash(vec![1, 2, 3], 4, 4);
         assert_eq!(
             r[0],
-            (
+            super::Piece(
                 [1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
                 0,
                 4

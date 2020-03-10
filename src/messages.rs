@@ -114,20 +114,13 @@ impl Message {
 
     pub async fn read_from(s: &mut TcpStream) -> Result<Message, Box<dyn Error>> {
         // let len: usize = timeout(consts::TIMEOUT, s.read_u32()).await?? as usize;
-        let len: u32 = match s.read_u32().await {
-            Ok(l) => l,
-            Err(e) => {
-                panic!("{:?}", e)
-            }
-        };
-
-        println!("Reading {} len", len);
+        let len = s.read_u32().await? as usize;
 
         if len == 0 {
             return  Ok(Message { message_id: MessageID::KeepAlive, payload: None })
         }
 
-        let mut buf = vec![0; len as usize];
+        let mut buf = vec![0; len];
         timeout(consts::TIMEOUT, s.read_exact(&mut buf)).await??;
         Ok(Message{
             message_id: Message::get_id(buf[0])?,
@@ -152,7 +145,6 @@ impl Message {
         if let Some(v) = &self.payload {
             res.extend(v);
         }
-        println!("{:?}", res);
         res
     }
 }

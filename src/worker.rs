@@ -14,6 +14,7 @@ use tokio::prelude::*;
 use std::time::Duration;
 use tokio::time::timeout;
 use std::error::Error;
+use std::cmp::min;
 
 pub struct Worker {
     id: u64,
@@ -28,6 +29,7 @@ pub struct Worker {
     current: Option<torrents::Piece>,
     requested: usize,
     received: usize,
+    buf: Vec<u8>,
 }
 
 enum State {
@@ -50,6 +52,7 @@ impl Worker {
             current: None,
             requested: 0,
             received: 0,
+            buf: Vec::new(),
         }
     }
 
@@ -121,15 +124,17 @@ impl Worker {
         if self.current == None {
             self.current = self.work.find_first(|x| bf.has(x.1)).await;
             self.requested = 0;
-            if self.current == None {
+            if let Some(piece) = &self.current {
+                self.buf = vec![0; piece.2];
+            } else {
                 // no more work
                 return false
             }
         }
 
-        if let Some(piece) = self.current {
-            while self.requested < self.received + consts::MAXREQUESTS && self.requested * consts::BLOCKSIZE< piece.2 {
-                if let Some(msg) = calc_request(piece.1, self.requested, piece.2) {
+        if let Some(piece) = self.current.clone() {
+            while self.requested < min(piece.2, self.received + consts::MAXREQUESTS * consts::BLOCKSIZE) {
+                if let Some((msg, len)) = calc_request(piece.1, self.requested, piece.2) {
                     println!("Worker {} requesting index {}, start {}", self.id, piece.1, self.requested);
                     if self.send_message(Message {
                         message_id: MessageID::Request,
@@ -138,7 +143,7 @@ impl Worker {
                         return false
                     }
 
-                    self.requested += 1;
+                    self.requested += len;
                 } else {
                     // error
                     return false
@@ -149,8 +154,36 @@ impl Worker {
         true
     }
 
-    async fn process_piece(&mut self, piece: Vec<u8>) {
-        println!("Worker {} reading piece {:?}", self.id, read_piece(piece));
+    async fn process_piece(&mut self, payload: Vec<u8>) -> Option<()> {
+        let piece = self.current.clone()?;
+        let (idx, start, buf) = read_piece(payload)?;
+        if idx != piece.1 {
+            return None
+        }
+        if start + buf.len() > self.buf.len() {
+            return None
+        }
+
+        self.buf[start..start+buf.len()].copy_from_slice(buf.as_slice());
+        self.received += buf.len();
+
+        if self.received == piece.2 {
+            // received all of piece
+            self.received = 0;
+            self.current = None;
+
+            // put piece back if doesn't match hash
+            if piece.verify(&self.buf) {
+                if self.tx.send(self.buf.clone()).await.ok() == None {
+                    return None
+                }
+            } else {
+                self.work.push(piece).await;
+                return None
+            }
+        }
+
+        Some(())
     }
 
     pub async fn download(&mut self) {
@@ -200,7 +233,9 @@ impl Worker {
                                 }
                             },
                             MessageID::Piece => {
-                                self.process_piece(msg.payload.unwrap()).await;
+                                if self.process_piece(msg.payload.unwrap()).await == None {
+                                    break
+                                }
                             },
                             _ => ()
                         }
@@ -213,7 +248,9 @@ impl Worker {
                                 state = State::Choked;
                             },
                             MessageID::Piece => {
-                                self.process_piece(msg.payload.unwrap()).await;
+                                if self.process_piece(msg.payload.unwrap()).await == None {
+                                    break
+                                }
                                 if !self.manage_io(&bf).await {
                                     break
                                 }
