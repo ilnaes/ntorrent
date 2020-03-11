@@ -7,7 +7,7 @@ use std::fs;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct FileInfo {
-    pub length: i64,
+    pub length: usize,
     pub path: Vec<String>,
 }
 
@@ -16,10 +16,10 @@ struct Info {
     #[serde(default)]
     files: Option<Vec<FileInfo>>,
     #[serde(default)]
-    pub length: Option<i64>,
+    pub length: Option<usize>,
     pub name: String,
     #[serde(rename = "piece length")]
-    pub piece_length: i64,
+    pub piece_length: usize,
     pub pieces: ByteBuf,
 }
 
@@ -36,19 +36,31 @@ impl TorrentFile {
     }
 }
 
-pub type Piece = ([u8; 20], usize);
+// hash * index * length
+#[derive(PartialEq, Debug, Clone)]
+pub struct Piece(pub [u8; 20], pub usize, pub usize);
+
+impl Piece {
+    pub fn verify(&self, buf: &Vec<u8>) -> bool {
+        true
+    }
+}
 
 pub struct Torrent {
     pub announce: String,
-    pub piece_length: i64,
+    pub piece_length: usize,
     pub info_hash: Vec<u8>,
     pub pieces: WorkQueue<Piece>,
     pub files: Vec<FileInfo>,
     pub peer_id: Vec<u8>,
 }
 
-pub fn split_hash(pieces: Vec<u8>) -> VecDeque<Piece> {
-    let num_pieces = (pieces.len() / 20) + 1;
+pub fn split_hash(pieces: Vec<u8>, piece_length: usize, length: usize) -> VecDeque<Piece> {
+    let num_pieces = ((pieces.len() - 1) / 20) + 1;
+    if num_pieces * piece_length < length || num_pieces * piece_length >= length + piece_length {
+        panic!("Bad length");
+    }
+
     let mut res: VecDeque<Piece> = VecDeque::with_capacity(num_pieces);
     let arr = pieces.as_slice();
 
@@ -61,7 +73,12 @@ pub fn split_hash(pieces: Vec<u8>) -> VecDeque<Piece> {
             }
             new[k] = arr[j + k]
         }
-        res.push_back((new, i));
+
+        if i == num_pieces - 1 && length % piece_length != 0 {
+            res.push_back(Piece(new, i, length % piece_length));
+        } else {
+            res.push_back(Piece(new, i, piece_length));
+        }
     }
     res
 }
@@ -76,12 +93,16 @@ impl Torrent {
         hash.input(info.as_slice());
 
         // if only one file, create new FileInfo
-        let files = f.info.files.unwrap_or({
+        let files = if let Some(file) = f.info.files {
+            file
+        } else {
             vec![FileInfo {
                 length: f.info.length.unwrap(),
                 path: vec![f.info.name],
             }]
-        });
+        };
+
+        let size = files.iter().map(|x| x.length).fold(0, |a, b| a + b);
 
         // randomly generate id
         let id: [u8; 20] = rand::random();
@@ -92,7 +113,11 @@ impl Torrent {
             announce: f.announce,
             piece_length: f.info.piece_length,
             info_hash: hash.result().as_slice().to_vec(),
-            pieces: WorkQueue::from(split_hash(f.info.pieces.into_vec())),
+            pieces: WorkQueue::from(split_hash(
+                f.info.pieces.into_vec(),
+                f.info.piece_length,
+                size,
+            )),
             files,
             peer_id: id.as_ref().to_vec(),
         }
@@ -103,20 +128,28 @@ impl Torrent {
 mod tests {
     #[test]
     fn test_split() {
-        let r = super::split_hash(vec![1, 2, 3]);
+        let r = super::split_hash(vec![1, 2, 3], 4, 4);
         assert_eq!(
             r[0],
-            (
+            super::Piece(
                 [1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-                0
+                0,
+                4
             )
         );
 
-        let r = super::split_hash(vec![0; 39]);
+        let r = super::split_hash(vec![0; 39], 4, 8);
         assert_eq!(r.len(), 2);
         assert_eq!(r[1].0.len(), 20);
 
-        let r = super::split_hash(vec![0; 41]);
+        let r = super::split_hash(vec![0; 41], 4, 10);
         assert_eq!(r.len(), 3);
+        assert_eq!(r[2].2, 2);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_panic() {
+        super::split_hash(vec![0; 40], 2, 5);
     }
 }

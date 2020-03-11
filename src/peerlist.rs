@@ -76,9 +76,9 @@ impl Peerlist {
 
         {
             let p = self.progress.lock().await;
-            params.extend(vec![("uploaded", p.uploaded),
-                            ("downloaded", p.downloaded),
-                            ("left", p.left)]);
+            params.extend(vec![("uploaded", p.uploaded as i64),
+                            ("downloaded", p.downloaded as i64),
+                            ("left", p.left as i64)]);
         }
 
         let client = reqwest::Client::new();
@@ -94,10 +94,8 @@ impl Peerlist {
 
         let res: messages::TrackerResponse = serde_bencode::de::from_bytes(&res)
                                                 .expect("Could not parse tracker response!");
-        // let mut l = self.list.get_queue().await;
-        // *l = parse_peerlist(res.peers.to_vec());
+
         self.list.replace(parse_peerlist(res.peers.to_vec())).await;
         self.interval = res.interval;
-        // println!("{:?}", *l);
     }
 }
