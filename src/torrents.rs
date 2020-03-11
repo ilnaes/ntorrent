@@ -41,8 +41,12 @@ impl TorrentFile {
 pub struct Piece(pub [u8; 20], pub usize, pub usize);
 
 impl Piece {
+    // verifies that the buf matches the piece's hash
     pub fn verify(&self, buf: &Vec<u8>) -> bool {
-        true
+        let mut hash = Sha1::new();
+        hash.input(buf);
+
+        return hash.result().as_slice() == self.0;
     }
 }
 
