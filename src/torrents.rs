@@ -93,12 +93,14 @@ impl Torrent {
         hash.input(info.as_slice());
 
         // if only one file, create new FileInfo
-        let files = f.info.files.unwrap_or({
+        let files = if let Some(file) = f.info.files {
+            file
+        } else {
             vec![FileInfo {
                 length: f.info.length.unwrap(),
                 path: vec![f.info.name],
             }]
-        });
+        };
 
         let size = files.iter().map(|x| x.length).fold(0, |a, b| a + b);
 

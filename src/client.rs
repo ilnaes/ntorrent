@@ -3,7 +3,7 @@ use crate::torrents::Torrent;
 use crate::peerlist::Peerlist;
 use crate::queue::WorkQueue;
 use crate::worker::Worker;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Mutex, mpsc, broadcast};
 use std::sync::Arc;
 
 pub struct Progress {
@@ -43,13 +43,22 @@ impl Client {
 
     pub async fn manage_workers(&self) {
         let n = self.torrent.pieces.len().await;
-        let (tx, mut rx) = mpsc::channel(n);
+        let (mtx, mut mrx) = mpsc::channel(n);
+        let (btx, mut brx) = broadcast::channel(n);
         
         for i in 0..self.nworkers {
-            let mut w = Worker::from_client(&self, tx.clone(), i);
+            let mut w = Worker::from_client(&self, i);
+            let rx = btx.subscribe();
+            let tx = mtx.clone();
             tokio::spawn(async move {
-                w.download().await;
+                w.download(tx, rx).await;
             });
+        }
+
+        loop {
+            while let Some((i, _res)) = mrx.recv().await {
+                println!("Got piece {}", i);
+            }
         }
     }
 

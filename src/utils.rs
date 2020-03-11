@@ -13,7 +13,7 @@ pub fn serialize_bytes(b: &Vec<u8>) -> String {
 pub fn calc_request(i: usize, start: usize, len: usize) -> Option<(Vec<u8>, usize)> {
     let mut res = vec![];
     WriteBytesExt::write_u32::<BigEndian>(&mut res, i as u32).ok()?;
-    WriteBytesExt::write_u32::<BigEndian>(&mut res, (start * BLOCKSIZE) as u32).ok()?;
+    WriteBytesExt::write_u32::<BigEndian>(&mut res, start as u32).ok()?;
 
     let mut l = BLOCKSIZE;
     if BLOCKSIZE + start > len {
@@ -28,7 +28,7 @@ pub fn read_piece(msg: Vec<u8>) -> Option<(usize, usize, Vec<u8>)> {
         return None;
     }
 
-    let (left, right) = msg.split_at(2);
+    let (left, right) = msg.split_at(8);
     let mut cx = Cursor::new(left);
     let idx = cx.read_u32::<BigEndian>().ok()? as usize;
     let start = cx.read_u32::<BigEndian>().ok()? as usize;

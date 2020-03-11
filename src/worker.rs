@@ -8,7 +8,7 @@ use crate::client;
 use crate::queue::WorkQueue;
 use crate::utils::{calc_request, read_piece};
 use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, Mutex, broadcast};
 use tokio::net::TcpStream;
 use tokio::prelude::*;
 use std::time::Duration;
@@ -18,7 +18,6 @@ use std::cmp::min;
 
 pub struct Worker {
     id: u64,
-    tx: mpsc::Sender<Vec<u8>>,
     progress: Arc<Mutex<Progress>>,
     peers: WorkQueue<String>,
     work: WorkQueue<torrents::Piece>,
@@ -39,10 +38,9 @@ enum State {
 }
 
 impl Worker {
-    pub fn from_client(c: &client::Client, tx: mpsc::Sender<Vec<u8>>, i: u64) -> Worker {
+    pub fn from_client(c: &client::Client, i: u64) -> Worker {
         Worker {
             id: i+1,
-            tx,
             progress: Arc::clone(&c.progress),
             peers: c.peer_list.clone(),
             work: c.torrent.pieces.clone(),
@@ -124,6 +122,7 @@ impl Worker {
         if self.current == None {
             self.current = self.work.find_first(|x| bf.has(x.1)).await;
             self.requested = 0;
+            self.received = 0;
             if let Some(piece) = &self.current {
                 self.buf = vec![0; piece.2];
             } else {
@@ -140,12 +139,14 @@ impl Worker {
                         message_id: MessageID::Request,
                         payload: Some(msg),
                     }).await.ok() == None {
+                        println!("Couldn't send request!");
                         return false
                     }
 
                     self.requested += len;
                 } else {
                     // error
+                    println!("Couldn't calculate request!");
                     return false
                 }
             }
@@ -154,13 +155,17 @@ impl Worker {
         true
     }
 
-    async fn process_piece(&mut self, payload: Vec<u8>) -> Option<()> {
+    async fn process_piece(&mut self, tx: &mut mpsc::Sender<(usize, Vec<u8>)>, payload: Vec<u8>) -> Option<()> {
         let piece = self.current.clone()?;
         let (idx, start, buf) = read_piece(payload)?;
+        println!("Got chunk {}, {}", idx, start);
         if idx != piece.1 {
+            println!("Not correct piece");
             return None
         }
         if start + buf.len() > self.buf.len() {
+            println!("Too large payload!");
+            println!("{} + {} > {}", start, buf.len(), self.buf.len());
             return None
         }
 
@@ -174,11 +179,13 @@ impl Worker {
 
             // put piece back if doesn't match hash
             if piece.verify(&self.buf) {
-                if self.tx.send(self.buf.clone()).await.ok() == None {
+                if tx.send((idx, self.buf.clone())).await.ok() == None {
+                    println!("Couldn't send!");
                     return None
                 }
             } else {
                 self.work.push(piece).await;
+                println!("Couldn't verify!");
                 return None
             }
         }
@@ -186,9 +193,12 @@ impl Worker {
         Some(())
     }
 
-    pub async fn download(&mut self) {
+    pub async fn download(&mut self, mut tx: mpsc::Sender<(usize, Vec<u8>)>, rx: broadcast::Receiver<Message>) {
+        loop {
         self.connect().await;
         println!("Worker {} connected", self.id);
+        self.received = 0;
+        self.requested = 0;
 
         let mut state = State::Entry;
         let mut bf = bitfield::Bitfield {
@@ -197,6 +207,7 @@ impl Worker {
 
         loop {
             let response = self.read_message().await.ok();
+            // println!("{:?}", response);
             if let Some(msg) = response {
                 match state {
                     State::Entry => {
@@ -207,11 +218,12 @@ impl Worker {
                             self.current = self.work.find_first(|x| bf.has(x.1)).await;
                             println!("Worker {} attemping to download piece {:?}", self.id, self.current);
 
-                            if self.current != None {
+                            if let Some(piece) = self.current.clone() {
                                 let res = self.send_message(Message{
                                     message_id: MessageID::Interested,
                                     payload: None,
                                 }).await.ok();
+                                self.buf = vec![0; piece.2];
 
                                 if res == None {
                                     break
@@ -233,7 +245,7 @@ impl Worker {
                                 }
                             },
                             MessageID::Piece => {
-                                if self.process_piece(msg.payload.unwrap()).await == None {
+                                if self.process_piece(&mut tx, msg.payload.unwrap()).await == None {
                                     break
                                 }
                             },
@@ -248,7 +260,7 @@ impl Worker {
                                 state = State::Choked;
                             },
                             MessageID::Piece => {
-                                if self.process_piece(msg.payload.unwrap()).await == None {
+                                if self.process_piece(&mut tx, msg.payload.unwrap()).await == None {
                                     break
                                 }
                                 if !self.manage_io(&bf).await {
@@ -271,5 +283,6 @@ impl Worker {
         if let Some(piece) = self.current.take() {
             self.work.push(piece).await;
         }
+    }
     }
 }

@@ -113,8 +113,8 @@ impl Message {
     }
 
     pub async fn read_from(s: &mut TcpStream) -> Result<Message, Box<dyn Error>> {
-        // let len: usize = timeout(consts::TIMEOUT, s.read_u32()).await?? as usize;
-        let len = s.read_u32().await? as usize;
+        let len: usize = timeout(consts::TIMEOUT, s.read_u32()).await?? as usize;
+        // let len = s.read_u32().await? as usize;
 
         if len == 0 {
             return  Ok(Message { message_id: MessageID::KeepAlive, payload: None })
