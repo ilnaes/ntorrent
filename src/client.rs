@@ -6,6 +6,8 @@ use crate::worker::Worker;
 use tokio::sync::{Mutex, mpsc, broadcast};
 use std::sync::Arc;
 use byteorder::{BigEndian, WriteBytesExt};
+use std::fs::File;
+use std::io::prelude::*;
 
 pub struct Progress {
     pub uploaded: usize,
@@ -44,7 +46,7 @@ impl Client {
         }
     }
 
-    pub async fn manage_workers(&mut self) {
+    async fn manage_workers(&mut self) -> Option<()> {
         let n = self.torrent.pieces.len().await;
         let (mtx, mut mrx) = mpsc::channel(n);
         let (btx, _) = broadcast::channel(n);
@@ -60,10 +62,8 @@ impl Client {
 
         let mut received = 0;
 
-        while let Some((i, res)) = mrx.recv().await {
-            println!("Client got piece {}", i);
-
-            let start = i * self.torrent.piece_length;
+        while let Some((id, idx, res)) = mrx.recv().await {
+            let start = idx * self.torrent.piece_length;
             self.buf[start..start + res.len()].copy_from_slice(res.as_slice());
 
             {
@@ -74,18 +74,22 @@ impl Client {
 
             // broadcast HAVE to all workers
             let mut payload = vec![];
-            WriteBytesExt::write_u32::<BigEndian>(&mut payload, i as u32).unwrap(); 
+            WriteBytesExt::write_u32::<BigEndian>(&mut payload, idx as u32).unwrap(); 
             btx.send(messages::Message{
                 message_id: messages::MessageID::Have,
                 payload: Some(payload),
             }).ok();
 
             received += 1;
+            println!("Client got piece {} from {} --- {:.3}%", idx, id, 100f32 * (received as f32)/(n as f32));
             
             if received == n {
-                break
+                let mut f = File::open("what").ok()?;
+                f.write(self.buf.as_slice()).ok()?;
+                return Some(())
             }
         }
+        Some(())
     }
 
     pub async fn download(&mut self) {

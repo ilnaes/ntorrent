@@ -43,6 +43,10 @@ pub struct Piece(pub [u8; 20], pub usize, pub usize);
 impl Piece {
     // verifies that the buf matches the piece's hash
     pub fn verify(&self, buf: &Vec<u8>) -> bool {
+        if buf.len() != self.2 {
+            return false;
+        }
+
         let mut hash = Sha1::new();
         hash.input(buf);
 

@@ -62,11 +62,12 @@ impl Worker {
         Err(Box::new(ConnectError))
     }
 
-    async fn read_message(&mut self) -> Result<Message, Box<dyn Error>> {
+    async fn read_message(&mut self) -> Option<Message> {
         if let Some(s) = &mut self.stream {
-            return Message::read_from(s).await
+            return Message::read_from(s).await.ok()
+        } else {
+            return None
         }
-        Err(Box::new(ConnectError))
     }
 
     // tries to connect to ip and handshake (with timeouts)
@@ -134,7 +135,7 @@ impl Worker {
         if let Some(piece) = self.current.clone() {
             while self.requested < min(piece.2, self.received + consts::MAXREQUESTS * consts::BLOCKSIZE) {
                 if let Some((msg, len)) = calc_request(piece.1, self.requested, piece.2) {
-                    println!("Worker {} requesting index {}, start {}", self.id, piece.1, self.requested);
+                    // println!("Worker {} requesting index {}, start {}", self.id, piece.1, self.requested);
                     if self.send_message(Message {
                         message_id: MessageID::Request,
                         payload: Some(msg),
@@ -155,7 +156,7 @@ impl Worker {
         true
     }
 
-    async fn process_piece(&mut self, tx: &mut mpsc::Sender<(usize, Vec<u8>)>, payload: Vec<u8>) -> Option<()> {
+    async fn process_piece(&mut self, tx: &mut mpsc::Sender<(u64, usize, Vec<u8>)>, payload: Vec<u8>) -> Option<()> {
         let piece = self.current.clone()?;
         let (idx, start, buf) = read_piece(payload)?;
         // println!("Got chunk {}, {}", idx, start);
@@ -179,7 +180,7 @@ impl Worker {
 
             // put piece back if doesn't match hash
             if piece.verify(&self.buf) {
-                if tx.send((idx, self.buf.clone())).await.ok() == None {
+                if tx.send((self.id, idx, self.buf.clone())).await.ok() == None {
                     println!("Couldn't send!");
                     return None
                 }
@@ -193,7 +194,7 @@ impl Worker {
         Some(())
     }
 
-    pub async fn download(&mut self, mut tx: mpsc::Sender<(usize, Vec<u8>)>, rx: broadcast::Receiver<Message>) {
+    pub async fn download(&mut self, mut tx: mpsc::Sender<(u64, usize, Vec<u8>)>, mut rx: broadcast::Receiver<Message>) {
         loop {
             self.connect().await;
             println!("Worker {} connected", self.id);
@@ -206,79 +207,83 @@ impl Worker {
             };
 
             loop {
-                let response = self.read_message().await.ok();
-                // println!("{:?}", response);
-                if let Some(msg) = response {
-                    match state {
-                        State::Entry => {
-                            if msg.message_id == MessageID::Bitfield && msg.payload != None {
-                                bf.bf = msg.payload.unwrap();
-
-                                // find work if exists and send interested
-                                self.current = self.work.find_first(|x| bf.has(x.1)).await;
-                                // println!("Worker {} attemping to download piece {:?}", self.id, self.current);
-
-                                if let Some(piece) = self.current.clone() {
-                                    let res = self.send_message(Message{
-                                        message_id: MessageID::Interested,
-                                        payload: None,
-                                    }).await.ok();
-                                    self.buf = vec![0; piece.2];
-
-                                    if res == None {
-                                        break
-                                    }
-                                    state = State::Choked;
-                                } else {
-                                    break
-                                }
-                            }
-                        },
-
-                        State::Choked => {
-                            match msg.message_id {
-                                MessageID::Unchoke => {
-                                    println!("Worker {} unchoked!", self.id);
-                                    state = State::Unchoked;
-                                    if !self.manage_io(&bf).await {
-                                        break
-                                    }
-                                },
-                                MessageID::Piece => {
-                                    if self.process_piece(&mut tx, msg.payload.unwrap()).await == None {
-                                        break
-                                    }
-                                },
-                                _ => ()
-                            }
-                        },
-
-                        State::Unchoked => {
-                            match msg.message_id {
-                                MessageID::Choke => {
-                                    println!("Worker {} choked!", self.id);
-                                    state = State::Choked;
-                                },
-                                MessageID::Piece => {
-                                    if self.process_piece(&mut tx, msg.payload.unwrap()).await == None {
-                                        break
-                                    }
-                                    if !self.manage_io(&bf).await {
-                                        break
-                                    }
-                                },
-                                _ => (),
-                            }
-                        },
+                tokio::select! {
+                    command = rx.recv() => {
+                        let r = command.ok();
+                        println!("Worker {} pinged!", self.id);
                     }
-                } else {
-                    println!("Worker {} read error", self.id);
-                    break
+                    response = self.read_message() => {
+                        if let Some(msg) = response {
+                            match state {
+                                State::Entry => {
+                                    if msg.message_id == MessageID::Bitfield && msg.payload != None {
+                                        bf.bf = msg.payload.unwrap();
+
+                                        // find work if exists and send interested
+                                        self.current = self.work.find_first(|x| bf.has(x.1)).await;
+                                        // println!("Worker {} attemping to download piece {:?}", self.id, self.current);
+
+                                        if let Some(piece) = self.current.clone() {
+                                            let res = self.send_message(Message{
+                                                message_id: MessageID::Interested,
+                                                payload: None,
+                                            }).await.ok();
+                                            self.buf = vec![0; piece.2];
+
+                                            if res == None {
+                                                break
+                                            }
+                                            state = State::Choked;
+                                        } else {
+                                            break
+                                        }
+                                    }
+                                },
+
+                                State::Choked => {
+                                    match msg.message_id {
+                                        MessageID::Unchoke => {
+                                            println!("Worker {} unchoked!", self.id);
+                                            state = State::Unchoked;
+                                            if !self.manage_io(&bf).await {
+                                                break
+                                            }
+                                        },
+                                        MessageID::Piece => {
+                                            if self.process_piece(&mut tx, msg.payload.unwrap()).await == None {
+                                                break
+                                            }
+                                        },
+                                        _ => ()
+                                    }
+                                },
+
+                                State::Unchoked => {
+                                    match msg.message_id {
+                                        MessageID::Choke => {
+                                            // println!("Worker {} choked!", self.id);
+                                            state = State::Choked;
+                                        },
+                                        MessageID::Piece => {
+                                            if self.process_piece(&mut tx, msg.payload.unwrap()).await == None {
+                                                break
+                                            }
+                                            if !self.manage_io(&bf).await {
+                                                break
+                                            }
+                                        },
+                                        _ => (),
+                                    }
+                                },
+                            }
+                        } else {
+                            println!("Worker {} read error", self.id);
+                            break
+                        }
+                    }
                 }
             }
-
             println!("Worker {} breaking off", self.id);
-
             // if there is still work, return it to queue
             if let Some(piece) = self.current.take() {
                 self.work.push(piece).await;

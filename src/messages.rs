@@ -58,7 +58,7 @@ impl Handshake {
     }
 }
 
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Debug, Clone)]
 pub enum MessageID {
     KeepAlive,
     Choke,
@@ -73,7 +73,7 @@ pub enum MessageID {
     Port,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Message {
     pub message_id: MessageID,
     pub payload: Option<Vec<u8>>,
