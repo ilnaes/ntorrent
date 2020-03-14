@@ -82,6 +82,7 @@ pub fn split_hash(pieces: Vec<u8>, piece_length: usize, length: usize) -> VecDeq
             new[k] = arr[j + k]
         }
 
+        // make sure to record proper length of piece
         if i == num_pieces - 1 && length % piece_length != 0 {
             res.push_back(Piece(new, i, length % piece_length));
         } else {

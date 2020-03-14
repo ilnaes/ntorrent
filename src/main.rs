@@ -2,6 +2,7 @@ use std::env;
 use std::process;
 use crate::client::Client;
 
+mod opstream;
 mod torrents;
 mod client;
 mod messages;

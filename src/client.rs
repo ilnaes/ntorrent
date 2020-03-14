@@ -3,6 +3,7 @@ use crate::torrents::Torrent;
 use crate::peerlist::Peerlist;
 use crate::queue::WorkQueue;
 use crate::worker::Worker;
+use crate::bitfield;
 use tokio::sync::{Mutex, mpsc, broadcast};
 use std::sync::Arc;
 use byteorder::{BigEndian, WriteBytesExt};
@@ -18,11 +19,12 @@ pub struct Progress {
 pub struct Client {
     nworkers: u64,
     pub torrent: Torrent,
+    pub size: usize,
     pub handshake: Vec<u8>,
     pub peer_list: WorkQueue<String>,
     pub progress: Arc<Mutex<Progress>>,
     pub port: i64,
-    pub buf: Vec<u8>,
+    pub bf: Arc<Mutex<bitfield::Bitfield>>,
 }
 
 impl Client {
@@ -30,10 +32,16 @@ impl Client {
         let torrent = Torrent::new(s);
         let left = torrent.files.iter().map(|x| x.length).fold(0, |a,b| a+b);
         let handshake = messages::Handshake::from(&torrent).serialize();
+        let num_pieces = if left == 0 {
+            0
+        } else {
+            (left - 1) / torrent.piece_length + 1
+        };
 
         Client {
             nworkers: 1,
             torrent,
+            size: left,
             peer_list: WorkQueue::new(),
             progress: Arc::new(Mutex::new(Progress {
                 uploaded: 0,
@@ -42,39 +50,47 @@ impl Client {
             })),
             port: 2222,
             handshake,
-            buf: vec![0; left],
+            bf: Arc::new(Mutex::new(bitfield::Bitfield {
+                bf: vec![0; num_pieces],
+            })),
         }
     }
 
-    async fn manage_workers(&mut self) -> Option<()> {
+    async fn manage_workers(&mut self) {
         let n = self.torrent.pieces.len().await;
-        let (mtx, mut mrx) = mpsc::channel(n);
+        let (mtx, mrx) = mpsc::channel(n);
         let (btx, _) = broadcast::channel(n);
         
         for i in 0..self.nworkers {
-            let mut w = Worker::from_client(&self, i);
-            let rx = btx.subscribe();
             let tx = mtx.clone();
+            let rx = btx.subscribe();
+            let mut w = Worker::from_client(&self, i, rx, tx.clone());
             tokio::spawn(async move {
-                w.download(tx, rx).await;
+                w.download().await;
             });
         }
 
-        let mut received = 0;
+        self.receive(mrx, btx).await;
+    }
+
+    async fn receive(&mut self, mut mrx: mpsc::Receiver<(u64, usize, Vec<u8>)>, btx: broadcast::Sender<messages::Message>) -> Option<()> {
+        let n = self.torrent.pieces.len().await;
+        let mut received: usize = 0;
+        let mut buf = vec![0; self.size];
 
         while let Some((id, idx, res)) = mrx.recv().await {
             let start = idx * self.torrent.piece_length;
-            self.buf[start..start + res.len()].copy_from_slice(res.as_slice());
+            buf[start..start + res.len()].copy_from_slice(res.as_slice());
 
             {
                 // update progress
-                let mut p = self.progress.lock().await;
-                p.downloaded += res.len();
+                let mut prog = self.progress.lock().await;
+                prog.downloaded += res.len();
             }
 
             // broadcast HAVE to all workers
             let mut payload = vec![];
-            WriteBytesExt::write_u32::<BigEndian>(&mut payload, idx as u32).unwrap(); 
+            WriteBytesExt::write_u32::<BigEndian>(&mut payload, idx as u32).ok()?;
             btx.send(messages::Message{
                 message_id: messages::MessageID::Have,
                 payload: Some(payload),
@@ -85,7 +101,7 @@ impl Client {
             
             if received == n {
                 let mut f = File::open("what").ok()?;
-                f.write(self.buf.as_slice()).ok()?;
+                f.write(buf.as_slice()).ok()?;
                 return Some(())
             }
         }

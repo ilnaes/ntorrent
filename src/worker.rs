@@ -1,10 +1,12 @@
 use crate::client::Progress;
 use crate::err::ConnectError;
 use crate::torrents;
+use crate::messages;
 use crate::messages::{Message, Handshake, MessageID};
 use crate::consts;
 use crate::bitfield;
 use crate::client;
+use crate::opstream::OpStream;
 use crate::queue::WorkQueue;
 use crate::utils::{calc_request, read_piece};
 use std::sync::Arc;
@@ -23,12 +25,15 @@ pub struct Worker {
     work: WorkQueue<torrents::Piece>,
     handshake: Vec<u8>,
     info_hash: Vec<u8>,
+    bf: Arc<Mutex<bitfield::Bitfield>>,
 
-    stream: Option<TcpStream>,
+    stream: OpStream,
     current: Option<torrents::Piece>,
     requested: usize,
     received: usize,
     buf: Vec<u8>,
+    rx: broadcast::Receiver<Message>,
+    tx: mpsc::Sender<(u64, usize, Vec<u8>)>,
 }
 
 enum State {
@@ -38,7 +43,7 @@ enum State {
 }
 
 impl Worker {
-    pub fn from_client(c: &client::Client, i: u64) -> Worker {
+    pub fn from_client(c: &client::Client, i: u64, rx: broadcast::Receiver<Message>, tx: mpsc::Sender<(u64, usize, Vec<u8>)>) -> Worker {
         Worker {
             id: i+1,
             progress: Arc::clone(&c.progress),
@@ -46,32 +51,20 @@ impl Worker {
             work: c.torrent.pieces.clone(),
             handshake: c.handshake.clone(),
             info_hash: c.torrent.info_hash.clone(),
-            stream: None,
+            bf: c.bf.clone(),
+
+            stream: OpStream::new(),
             current: None,
             requested: 0,
             received: 0,
             buf: Vec::new(),
-        }
-    }
-
-    async fn send_message(&mut self, m: Message) -> Result<(), Box<dyn Error>> {
-        if let Some(s) = &mut self.stream {
-            timeout(consts::TIMEOUT, s.write_all(m.serialize().as_slice())).await??;
-            return Ok(())
-        }
-        Err(Box::new(ConnectError))
-    }
-
-    async fn read_message(&mut self) -> Option<Message> {
-        if let Some(s) = &mut self.stream {
-            return Message::read_from(s).await.ok()
-        } else {
-            return None
+            rx,
+            tx,
         }
     }
 
     // tries to connect to ip and handshake (with timeouts)
-    async fn handshake(&self, ip: String) -> Result<TcpStream, Box<dyn Error>> {
+    async fn handshake(&self, ip: &str) -> Result<TcpStream, Box<dyn Error>> {
         let mut s = timeout(consts::TIMEOUT, TcpStream::connect(ip)).await??;
 
         let mut buf = [0; 128];
@@ -91,24 +84,21 @@ impl Worker {
     async fn connect(&mut self) {
         loop {
             let ip: String;
-            {
-                loop {
-                    if let Some(s) = self.peers.pop().await {
-                        ip = s;
-                        break
-                    } else {
-                        // wait 1s before getting another peer
-                        tokio::time::delay_for(Duration::from_secs(1)).await;
-                    }
+            loop {
+                if let Some(s) = self.peers.pop().await {
+                    ip = s;
+                    break
+                } else {
+                    // wait 1s before getting another peer
+                    tokio::time::delay_for(Duration::from_secs(1)).await;
                 }
             }
 
             println!("Worker {} attempting to connect to {}", self.id, ip);
-            let res = self.handshake(ip.clone()).await.ok();
+            let res = self.handshake(&ip).await.ok();
 
             if let Some(s) = res {
-                self.stream = Some(s);
-                // TODO: send bitfield
+                self.stream = OpStream::from(s);
                 return;
             }
             println!("Worker {} not connected", self.id);
@@ -136,7 +126,7 @@ impl Worker {
             while self.requested < min(piece.2, self.received + consts::MAXREQUESTS * consts::BLOCKSIZE) {
                 if let Some((msg, len)) = calc_request(piece.1, self.requested, piece.2) {
                     // println!("Worker {} requesting index {}, start {}", self.id, piece.1, self.requested);
-                    if self.send_message(Message {
+                    if self.stream.send_message(Message {
                         message_id: MessageID::Request,
                         payload: Some(msg),
                     }).await.ok() == None {
@@ -156,7 +146,7 @@ impl Worker {
         true
     }
 
-    async fn process_piece(&mut self, tx: &mut mpsc::Sender<(u64, usize, Vec<u8>)>, payload: Vec<u8>) -> Option<()> {
+    async fn process_piece(&mut self, payload: Vec<u8>) -> Option<()> {
         let piece = self.current.clone()?;
         let (idx, start, buf) = read_piece(payload)?;
         // println!("Got chunk {}, {}", idx, start);
@@ -180,7 +170,7 @@ impl Worker {
 
             // put piece back if doesn't match hash
             if piece.verify(&self.buf) {
-                if tx.send((self.id, idx, self.buf.clone())).await.ok() == None {
+                if self.tx.send((self.id, idx, self.buf.clone())).await.ok() == None {
                     println!("Couldn't send!");
                     return None
                 }
@@ -194,9 +184,21 @@ impl Worker {
         Some(())
     }
 
-    pub async fn download(&mut self, mut tx: mpsc::Sender<(u64, usize, Vec<u8>)>, mut rx: broadcast::Receiver<Message>) {
+    pub async fn download(&mut self) {
         loop {
             self.connect().await;
+            let bf: Vec<u8>;
+            {
+                let b = self.bf.lock().await;
+                bf = b.bf.clone();
+            }
+            if let Err(_) = self.stream.send_message(messages::Message {
+                message_id: MessageID::Bitfield,
+                payload: Some(bf),
+            }).await {
+                continue
+            }
+
             println!("Worker {} connected", self.id);
             self.received = 0;
             self.requested = 0;
@@ -208,11 +210,10 @@ impl Worker {
 
             loop {
                 tokio::select! {
-                    command = rx.recv() => {
-                        let r = command.ok();
+                    _ = self.rx.recv() => {
                         println!("Worker {} pinged!", self.id);
                     }
-                    response = self.read_message() => {
+                    response = self.stream.read_message() => {
                         if let Some(msg) = response {
                             match state {
                                 State::Entry => {
@@ -224,7 +225,7 @@ impl Worker {
                                         // println!("Worker {} attemping to download piece {:?}", self.id, self.current);
 
                                         if let Some(piece) = self.current.clone() {
-                                            let res = self.send_message(Message{
+                                            let res = self.stream.send_message(Message{
                                                 message_id: MessageID::Interested,
                                                 payload: None,
                                             }).await.ok();
@@ -250,7 +251,7 @@ impl Worker {
                                             }
                                         },
                                         MessageID::Piece => {
-                                            if self.process_piece(&mut tx, msg.payload.unwrap()).await == None {
+                                            if self.process_piece(msg.payload.unwrap()).await == None {
                                                 break
                                             }
                                         },
@@ -265,7 +266,7 @@ impl Worker {
                                             state = State::Choked;
                                         },
                                         MessageID::Piece => {
-                                            if self.process_piece(&mut tx, msg.payload.unwrap()).await == None {
+                                            if self.process_piece(msg.payload.unwrap()).await == None {
                                                 break
                                             }
                                             if !self.manage_io(&bf).await {
