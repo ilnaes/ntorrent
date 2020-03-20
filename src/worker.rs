@@ -67,7 +67,7 @@ impl Worker {
     async fn handshake(&self, ip: &str) -> Result<TcpStream, Box<dyn Error>> {
         let mut s = timeout(consts::TIMEOUT, TcpStream::connect(ip)).await??;
 
-        let mut buf = [0; 128];
+        let mut buf = [0; 68];
         timeout(consts::TIMEOUT, s.write_all(self.handshake.as_slice())).await??;
         timeout(consts::TIMEOUT, s.read(&mut buf)).await??;
 
@@ -109,41 +109,27 @@ impl Worker {
 
     // sends requests and pieces and chooses new work piece if necessary
     // returns false if error or no more work to be done
-    async fn manage_io(&mut self, bf: &bitfield::Bitfield) -> bool {
+    async fn manage_io(&mut self, bf: &bitfield::Bitfield) -> Option<()> {
         if self.current == None {
             self.current = self.work.find_first(|x| bf.has(x.1)).await;
             self.requested = 0;
             self.received = 0;
-            if let Some(piece) = &self.current {
-                self.buf = vec![0; piece.2];
-            } else {
-                // no more work
-                return false
-            }
+
+            let piece = self.current.as_ref()?;
+            self.buf = vec![0; piece.2];
         }
 
-        if let Some(piece) = self.current.clone() {
-            while self.requested < min(piece.2, self.received + consts::MAXREQUESTS * consts::BLOCKSIZE) {
-                if let Some((msg, len)) = calc_request(piece.1, self.requested, piece.2) {
-                    // println!("Worker {} requesting index {}, start {}", self.id, piece.1, self.requested);
-                    if self.stream.send_message(Message {
-                        message_id: MessageID::Request,
-                        payload: Some(msg),
-                    }).await.ok() == None {
-                        println!("Couldn't send request!");
-                        return false
-                    }
-
-                    self.requested += len;
-                } else {
-                    // error
-                    println!("Couldn't calculate request!");
-                    return false
-                }
-            }
+        let piece = self.current.as_ref()?;
+        while self.requested < min(piece.2, self.received + consts::MAXREQUESTS * consts::BLOCKSIZE) {
+            let msg = calc_request(piece.1, self.requested, piece.2)?;
+            // println!("Worker {} requesting index {}, start {}", self.id, piece.1, self.requested);
+            self.stream.send_message(Message {
+                message_id: MessageID::Request,
+                payload: Some(msg),
+            }).await.ok()?;
         }
 
-        true
+        Some(())
     }
 
     async fn process_piece(&mut self, payload: Vec<u8>) -> Option<()> {
@@ -246,7 +232,7 @@ impl Worker {
                                         MessageID::Unchoke => {
                                             println!("Worker {} unchoked!", self.id);
                                             state = State::Unchoked;
-                                            if !self.manage_io(&bf).await {
+                                            if self.manage_io(&bf).await == None {
                                                 break
                                             }
                                         },
@@ -269,7 +255,7 @@ impl Worker {
                                             if self.process_piece(msg.payload.unwrap()).await == None {
                                                 break
                                             }
-                                            if !self.manage_io(&bf).await {
+                                            if self.manage_io(&bf).await == None {
                                                 break
                                             }
                                         },

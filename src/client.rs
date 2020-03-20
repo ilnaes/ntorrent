@@ -70,6 +70,7 @@ impl Client {
             });
         }
 
+        // spin up receiver of pieces
         self.receive(mrx, btx).await;
     }
 
