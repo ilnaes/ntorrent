@@ -10,7 +10,7 @@ pub fn serialize_bytes(b: &Vec<u8>) -> String {
 
 // takes index, start, and total length of piece,
 // returns message for request
-pub fn calc_request(i: usize, start: usize, len: usize) -> Option<Vec<u8>> {
+pub fn calc_request(i: usize, start: usize, len: usize) -> Option<(Vec<u8>, usize)> {
     let mut res = vec![];
     WriteBytesExt::write_u32::<BigEndian>(&mut res, i as u32).ok()?;
     WriteBytesExt::write_u32::<BigEndian>(&mut res, start as u32).ok()?;
@@ -20,7 +20,7 @@ pub fn calc_request(i: usize, start: usize, len: usize) -> Option<Vec<u8>> {
         l = len - start;
     }
     WriteBytesExt::write_u32::<BigEndian>(&mut res, l as u32).ok()?;
-    Some(res)
+    Some((res, l))
 }
 
 pub fn read_piece(msg: Vec<u8>) -> Option<(usize, usize, Vec<u8>)> {

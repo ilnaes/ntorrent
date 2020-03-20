@@ -31,12 +31,11 @@ impl Client {
     pub fn new(s: &str) -> Client {
         let torrent = Torrent::new(s);
         let left = torrent.files.iter().map(|x| x.length).fold(0, |a,b| a+b);
+        if left == 0 {
+            panic!("no pieces");
+        }
         let handshake = messages::Handshake::from(&torrent).serialize();
-        let num_pieces = if left == 0 {
-            0
-        } else {
-            (left - 1) / torrent.piece_length + 1
-        };
+        let n = (left - 1) / (8 * torrent.piece_length) + 1;
 
         Client {
             nworkers: 1,
@@ -51,7 +50,7 @@ impl Client {
             port: 2222,
             handshake,
             bf: Arc::new(Mutex::new(bitfield::Bitfield {
-                bf: vec![0; num_pieces],
+                bf: vec![0; n],
             })),
         }
     }

@@ -37,7 +37,6 @@ pub struct Worker {
 }
 
 enum State {
-    Entry,
     Choked,
     Unchoked
 }
@@ -69,7 +68,9 @@ impl Worker {
 
         let mut buf = [0; 68];
         timeout(consts::TIMEOUT, s.write_all(self.handshake.as_slice())).await??;
-        timeout(consts::TIMEOUT, s.read(&mut buf)).await??;
+        if let Ok(n) = s.read(&mut buf).await {
+            println!("READ {}", n);
+        }
 
         if let Some(h) = Handshake::deserialize(buf.to_vec()) {
             if h.info_hash != self.info_hash {
@@ -81,7 +82,7 @@ impl Worker {
 
     // repeatedly attempts to connect to a peer, handshake
     // and get bitfield until success
-    async fn connect(&mut self) {
+    async fn connect(&mut self) -> bitfield::Bitfield {
         loop {
             let ip: String;
             loop {
@@ -99,7 +100,29 @@ impl Worker {
 
             if let Some(s) = res {
                 self.stream = OpStream::from(s);
-                return;
+
+                // send own bitfield
+                let payload: Vec<u8>;
+                {
+                    let b = self.bf.lock().await;
+                    payload = b.bf.clone();
+                }
+                if let Err(_) = self.stream.send_message(messages::Message {
+                    message_id: MessageID::Bitfield,
+                    payload: Some(payload),
+                }).await {
+                    continue
+                }
+
+                // get opposing bitfield
+                let response = self.stream.read_message().await;
+                if let Some(msg) = response {
+                    if msg.message_id == MessageID::Bitfield && msg.payload != None {
+                        return bitfield::Bitfield {
+                            bf: msg.payload.unwrap(),
+                        }
+                    }
+                }
             }
             println!("Worker {} not connected", self.id);
             // put ip back
@@ -121,12 +144,13 @@ impl Worker {
 
         let piece = self.current.as_ref()?;
         while self.requested < min(piece.2, self.received + consts::MAXREQUESTS * consts::BLOCKSIZE) {
-            let msg = calc_request(piece.1, self.requested, piece.2)?;
+            let (msg, len) = calc_request(piece.1, self.requested, piece.2)?;
             // println!("Worker {} requesting index {}, start {}", self.id, piece.1, self.requested);
             self.stream.send_message(Message {
                 message_id: MessageID::Request,
                 payload: Some(msg),
             }).await.ok()?;
+            self.requested += len;
         }
 
         Some(())
@@ -172,16 +196,22 @@ impl Worker {
 
     pub async fn download(&mut self) {
         loop {
-            self.connect().await;
-            let bf: Vec<u8>;
-            {
-                let b = self.bf.lock().await;
-                bf = b.bf.clone();
-            }
-            if let Err(_) = self.stream.send_message(messages::Message {
-                message_id: MessageID::Bitfield,
-                payload: Some(bf),
-            }).await {
+            let bf = self.connect().await;
+
+            // get first piece
+            self.current = self.work.find_first(|x| bf.has(x.1)).await;
+            if let Some(piece) = self.current.as_ref() {
+                let res = self.stream.send_message(Message{
+                    message_id: MessageID::Interested,
+                    payload: None,
+                }).await.ok();
+                self.buf = vec![0; piece.2];
+
+                if res == None {
+                    continue
+                }
+            } else {
+                println!("Worker {}, no need pieces", self.id);
                 continue
             }
 
@@ -189,10 +219,7 @@ impl Worker {
             self.received = 0;
             self.requested = 0;
 
-            let mut state = State::Entry;
-            let mut bf = bitfield::Bitfield {
-                bf: Vec::new(),
-            };
+            let mut state = State::Choked;
 
             loop {
                 tokio::select! {
@@ -202,37 +229,13 @@ impl Worker {
                     response = self.stream.read_message() => {
                         if let Some(msg) = response {
                             match state {
-                                State::Entry => {
-                                    if msg.message_id == MessageID::Bitfield && msg.payload != None {
-                                        bf.bf = msg.payload.unwrap();
-
-                                        // find work if exists and send interested
-                                        self.current = self.work.find_first(|x| bf.has(x.1)).await;
-                                        // println!("Worker {} attemping to download piece {:?}", self.id, self.current);
-
-                                        if let Some(piece) = self.current.clone() {
-                                            let res = self.stream.send_message(Message{
-                                                message_id: MessageID::Interested,
-                                                payload: None,
-                                            }).await.ok();
-                                            self.buf = vec![0; piece.2];
-
-                                            if res == None {
-                                                break
-                                            }
-                                            state = State::Choked;
-                                        } else {
-                                            break
-                                        }
-                                    }
-                                },
-
                                 State::Choked => {
                                     match msg.message_id {
                                         MessageID::Unchoke => {
                                             println!("Worker {} unchoked!", self.id);
                                             state = State::Unchoked;
                                             if self.manage_io(&bf).await == None {
+                                                println!("BAD");
                                                 break
                                             }
                                         },

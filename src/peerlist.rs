@@ -96,6 +96,8 @@ impl Peerlist {
                                                 .expect("Could not parse tracker response!");
 
         self.list.replace(parse_peerlist(res.peers.to_vec())).await;
+        // hack for own tracker
+        // self.list.push("localhost:54331".to_string()).await;
         self.interval = res.interval;
     }
 }

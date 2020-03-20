@@ -2,6 +2,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::{Mutex, Notify};
 
+#[derive(Debug)]
 pub struct WorkQueue<T> {
     q: Arc<Mutex<VecDeque<T>>>,
     cond: Arc<Notify>,
