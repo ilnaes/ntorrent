@@ -4,6 +4,7 @@ pub struct Bitfield {
 }
 
 impl Bitfield {
+    /// returns true if the bitfield has item at location x
     pub fn has(&self, x: usize) -> bool {
         if self.bf.len() == 0 || self.bf.len() * 8 < x {
             return false;
@@ -14,6 +15,7 @@ impl Bitfield {
         return (self.bf[i] >> j) & 1 == 1;
     }
 
+    /// switches the bit at location x to 1
     pub fn add(&mut self, x: usize) {
         if self.bf.len() == 0 || self.bf.len() * 8 < x {
             return;

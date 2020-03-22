@@ -97,7 +97,7 @@ impl Peerlist {
 
         self.list.replace(parse_peerlist(res.peers.to_vec())).await;
         // hack for own tracker
-        // self.list.push("localhost:54331".to_string()).await;
+        self.list.push("localhost:54331".to_string()).await;
         self.interval = res.interval;
     }
 }

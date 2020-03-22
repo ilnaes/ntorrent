@@ -65,7 +65,7 @@ impl Client {
             let rx = btx.subscribe();
             let mut w = Worker::from_client(&self, i, rx, tx.clone());
             tokio::spawn(async move {
-                w.download().await;
+                w.download(true).await;
             });
         }
 

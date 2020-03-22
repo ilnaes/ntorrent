@@ -17,6 +17,7 @@ use std::time::Duration;
 use tokio::time::timeout;
 use std::error::Error;
 use std::cmp::min;
+use byteorder::{ByteOrder, BigEndian};
 
 pub struct Worker {
     id: u64,
@@ -34,11 +35,6 @@ pub struct Worker {
     buf: Vec<u8>,
     rx: broadcast::Receiver<Message>,
     tx: mpsc::Sender<(u64, usize, Vec<u8>)>,
-}
-
-enum State {
-    Choked,
-    Unchoked
 }
 
 impl Worker {
@@ -68,9 +64,7 @@ impl Worker {
 
         let mut buf = [0; 68];
         timeout(consts::TIMEOUT, s.write_all(self.handshake.as_slice())).await??;
-        if let Ok(n) = s.read(&mut buf).await {
-            println!("READ {}", n);
-        }
+        timeout(consts::TIMEOUT, s.read(&mut buf)).await??;
 
         if let Some(h) = Handshake::deserialize(buf.to_vec()) {
             if h.info_hash != self.info_hash {
@@ -118,9 +112,16 @@ impl Worker {
                 let response = self.stream.read_message().await;
                 if let Some(msg) = response {
                     if msg.message_id == MessageID::Bitfield && msg.payload != None {
-                        return bitfield::Bitfield {
-                            bf: msg.payload.unwrap(),
+                        let bf = msg.payload.unwrap();
+
+                        {
+                            // test length of bitfield
+                            let own_bf = self.bf.lock().await;
+                            if own_bf.bf.len() != bf.len() {
+                                continue
+                            }
                         }
+                        return bitfield::Bitfield { bf }
                     }
                 }
             }
@@ -145,7 +146,6 @@ impl Worker {
         let piece = self.current.as_ref()?;
         while self.requested < min(piece.2, self.received + consts::MAXREQUESTS * consts::BLOCKSIZE) {
             let (msg, len) = calc_request(piece.1, self.requested, piece.2)?;
-            // println!("Worker {} requesting index {}, start {}", self.id, piece.1, self.requested);
             self.stream.send_message(Message {
                 message_id: MessageID::Request,
                 payload: Some(msg),
@@ -156,10 +156,11 @@ impl Worker {
         Some(())
     }
 
+    // adds data from payload into buf
     async fn process_piece(&mut self, payload: Vec<u8>) -> Option<()> {
         let piece = self.current.clone()?;
         let (idx, start, buf) = read_piece(payload)?;
-        // println!("Got chunk {}, {}", idx, start);
+
         if idx != piece.1 {
             println!("Not correct piece");
             return None
@@ -194,7 +195,7 @@ impl Worker {
         Some(())
     }
 
-    pub async fn download(&mut self) {
+    pub async fn download(&mut self, disconnect: bool) {
         loop {
             let bf = self.connect().await;
 
@@ -210,8 +211,9 @@ impl Worker {
                 if res == None {
                     continue
                 }
-            } else {
-                println!("Worker {}, no need pieces", self.id);
+            }
+
+            if self.current == None && disconnect {
                 continue
             }
 
@@ -219,52 +221,56 @@ impl Worker {
             self.received = 0;
             self.requested = 0;
 
-            let mut state = State::Choked;
+            let mut choked = true;
 
             loop {
                 tokio::select! {
-                    _ = self.rx.recv() => {
-                        println!("Worker {} pinged!", self.id);
+                    message = self.rx.recv() => {
+                        if let Ok(msg) = message {
+                            if msg.message_id == MessageID::Have {
+                                println!("Worker {} sending HAVE!", self.id);
+                                if let Err(_) = self.stream.send_message(msg).await {
+                                    break
+                                }
+                            }
+                        }
                     }
                     response = self.stream.read_message() => {
                         if let Some(msg) = response {
-                            match state {
-                                State::Choked => {
-                                    match msg.message_id {
-                                        MessageID::Unchoke => {
-                                            println!("Worker {} unchoked!", self.id);
-                                            state = State::Unchoked;
-                                            if self.manage_io(&bf).await == None {
-                                                println!("BAD");
-                                                break
-                                            }
-                                        },
-                                        MessageID::Piece => {
-                                            if self.process_piece(msg.payload.unwrap()).await == None {
-                                                break
-                                            }
-                                        },
-                                        _ => ()
+                            match msg.message_id {
+                                MessageID::Piece => {
+                                    if self.process_piece(msg.payload.unwrap()).await == None {
+                                        break
                                     }
                                 },
+                                MessageID::Unchoke => {
+                                    println!("Worker {} unchoked!", self.id);
+                                    choked = false;
+                                },
+                                MessageID::Choke => {
+                                    choked = true;
+                                },
+                                MessageID::Have => {
+                                    let buf = msg.payload.unwrap();
+                                    let i = BigEndian::read_u32(&buf);
+                                    {
+                                        let mut self_bf = self.bf.lock().await;
+                                        self_bf.add(i as usize);
+                                    }
+                                },
+                                MessageID::Request => {
+                                },
+                                MessageID::Interested => {
+                                },
+                                _ => {
+                                },
+                            }
 
-                                State::Unchoked => {
-                                    match msg.message_id {
-                                        MessageID::Choke => {
-                                            // println!("Worker {} choked!", self.id);
-                                            state = State::Choked;
-                                        },
-                                        MessageID::Piece => {
-                                            if self.process_piece(msg.payload.unwrap()).await == None {
-                                                break
-                                            }
-                                            if self.manage_io(&bf).await == None {
-                                                break
-                                            }
-                                        },
-                                        _ => (),
-                                    }
-                                },
+                            // if not choked, send some messages
+                            if !choked {
+                                if self.manage_io(&bf).await == None && disconnect {
+                                    break
+                                }
                             }
                         } else {
                             println!("Worker {} read error", self.id);
