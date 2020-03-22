@@ -1,8 +1,8 @@
 use crate::client::Progress;
 use crate::utils::serialize_bytes;
 use crate::client::Client;
-use crate::messages;
-use crate::queue::WorkQueue;
+use crate::messages::messages::TrackerResponse;
+use crate::utils::queue::WorkQueue;
 use tokio::sync::Mutex;
 use std::sync::Arc;
 use byteorder::{BigEndian, ReadBytesExt};
@@ -92,8 +92,8 @@ impl Peerlist {
             .await
             .expect("Could not parse tracker response!");
 
-        let res: messages::TrackerResponse = serde_bencode::de::from_bytes(&res)
-                                                .expect("Could not parse tracker response!");
+        let res: TrackerResponse = serde_bencode::de::from_bytes(&res)
+                                         .expect("Could not parse tracker response!");
 
         self.list.replace(parse_peerlist(res.peers.to_vec())).await;
         // hack for own tracker

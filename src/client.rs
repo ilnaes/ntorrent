@@ -1,15 +1,16 @@
-use crate::messages;
-use crate::handshake::Handshake;
+use crate::messages::messages::{Message, MessageID};
+use crate::messages::handshake::Handshake;
 use crate::torrents::Torrent;
 use crate::peerlist::Peerlist;
-use crate::queue::WorkQueue;
+use crate::utils::queue::WorkQueue;
 use crate::worker::Worker;
-use crate::bitfield;
+use crate::utils::bitfield;
 use tokio::sync::{Mutex, mpsc, broadcast};
 use std::sync::Arc;
 use byteorder::{BigEndian, WriteBytesExt};
 use std::fs::File;
 use std::io::prelude::*;
+use std::path::Path;
 
 pub struct Progress {
     pub uploaded: usize,
@@ -72,7 +73,7 @@ impl Client {
         self.receive(mrx, btx).await;
     }
 
-    async fn receive(&mut self, mut mrx: mpsc::Receiver<(u64, usize, Vec<u8>)>, btx: broadcast::Sender<messages::Message>) -> Option<()> {
+    async fn receive(&mut self, mut mrx: mpsc::Receiver<(u64, usize, Vec<u8>)>, btx: broadcast::Sender<Message>) -> Option<()> {
         let n = self.torrent.pieces.len().await;
         let mut received: usize = 0;
         let mut buf = vec![0; self.torrent.length];
@@ -90,8 +91,8 @@ impl Client {
             // broadcast HAVE to all workers
             let mut payload = vec![];
             WriteBytesExt::write_u32::<BigEndian>(&mut payload, idx as u32).ok()?;
-            btx.send(messages::Message{
-                message_id: messages::MessageID::Have,
+            btx.send(Message{
+                message_id: MessageID::Have,
                 payload: Some(payload),
             }).ok();
 
@@ -99,7 +100,8 @@ impl Client {
             println!("Client got piece {} from {} --- {:.3}%", idx, id, 100f32 * (received as f32)/(n as f32));
             
             if received == n {
-                let mut f = File::open("what").ok()?;
+                let path = Path::new("what.pdf");
+                let mut f = File::create(&path).ok()?;
                 f.write(buf.as_slice()).ok()?;
                 return Some(())
             }

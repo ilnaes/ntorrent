@@ -1,14 +1,12 @@
 use crate::client::Progress;
-use crate::err::ConnectError;
 use crate::torrents;
-use crate::messages;
-use crate::handshake::Handshake;
-use crate::messages::{Message, MessageID};
+use crate::messages::handshake::Handshake;
+use crate::messages::messages::{Message, MessageID};
 use crate::consts;
-use crate::bitfield;
+use crate::utils::bitfield;
 use crate::client;
 use crate::opstream::OpStream;
-use crate::queue::WorkQueue;
+use crate::utils::queue::WorkQueue;
 use crate::utils::{calc_request, read_piece};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex, broadcast};
@@ -16,7 +14,6 @@ use tokio::net::TcpStream;
 use tokio::prelude::*;
 use std::time::Duration;
 use tokio::time::timeout;
-use std::error::Error;
 use std::cmp::min;
 use byteorder::{ByteOrder, BigEndian};
 
@@ -60,19 +57,19 @@ impl Worker {
     }
 
     // tries to connect to ip and handshake (with timeouts)
-    async fn handshake(&self, ip: &str) -> Result<TcpStream, Box<dyn Error>> {
-        let mut s = timeout(consts::TIMEOUT, TcpStream::connect(ip)).await??;
+    async fn handshake(&self, ip: &str) -> Option<TcpStream> {
+        let mut s = timeout(consts::TIMEOUT, TcpStream::connect(ip)).await.ok()?.ok()?;
 
         let mut buf = [0; 68];
-        timeout(consts::TIMEOUT, s.write_all(self.handshake.as_slice())).await??;
-        timeout(consts::TIMEOUT, s.read(&mut buf)).await??;
+        timeout(consts::TIMEOUT, s.write_all(self.handshake.as_slice())).await.ok()?.ok()?;
+        timeout(consts::TIMEOUT, s.read(&mut buf)).await.ok()?.ok()?;
 
         if let Some(h) = Handshake::deserialize(buf.to_vec()) {
             if h.info_hash != self.info_hash {
-                return Err(Box::new(ConnectError))
+                return None
             }
         }
-        Ok(s)
+        Some(s)
     }
 
     // repeatedly attempts to connect to a peer, handshake
@@ -91,7 +88,7 @@ impl Worker {
             }
 
             println!("Worker {} attempting to connect to {}", self.id, ip);
-            let res = self.handshake(&ip).await.ok();
+            let res = self.handshake(&ip).await;
 
             if let Some(s) = res {
                 self.stream = OpStream::from(s);
@@ -102,7 +99,7 @@ impl Worker {
                     let b = self.bf.lock().await;
                     payload = b.bf.clone();
                 }
-                if self.stream.send_message(messages::Message {
+                if self.stream.send_message(Message {
                     message_id: MessageID::Bitfield,
                     payload: Some(payload),
                 }).await == None {

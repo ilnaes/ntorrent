@@ -1,4 +1,4 @@
-use crate::messages::{Message, MessageID};
+use crate::messages::messages::{Message, MessageID};
 use crate::consts;
 use tokio::net::TcpStream;
 use tokio::time::timeout;

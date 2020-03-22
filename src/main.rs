@@ -3,17 +3,13 @@ use std::process;
 use crate::client::Client;
 
 mod opstream;
-mod handshake;
 mod torrents;
 mod client;
 mod messages;
 mod peerlist;
 mod utils;
 mod worker;
-mod err;
-mod queue;
 mod consts;
-mod bitfield;
 
 #[tokio::main]
 async fn main() {

@@ -1,4 +1,4 @@
-use crate::queue::WorkQueue;
+use crate::utils::queue::WorkQueue;
 use serde::{Deserialize, Serialize};
 use serde_bytes::ByteBuf;
 use sha1::{Digest, Sha1};
