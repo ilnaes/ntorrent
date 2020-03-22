@@ -2,7 +2,8 @@ use crate::client::Progress;
 use crate::err::ConnectError;
 use crate::torrents;
 use crate::messages;
-use crate::messages::{Message, Handshake, MessageID};
+use crate::handshake::Handshake;
+use crate::messages::{Message, MessageID};
 use crate::consts;
 use crate::bitfield;
 use crate::client;
@@ -101,10 +102,10 @@ impl Worker {
                     let b = self.bf.lock().await;
                     payload = b.bf.clone();
                 }
-                if let Err(_) = self.stream.send_message(messages::Message {
+                if self.stream.send_message(messages::Message {
                     message_id: MessageID::Bitfield,
                     payload: Some(payload),
-                }).await {
+                }).await == None {
                     continue
                 }
 
@@ -149,7 +150,7 @@ impl Worker {
             self.stream.send_message(Message {
                 message_id: MessageID::Request,
                 payload: Some(msg),
-            }).await.ok()?;
+            }).await?;
             self.requested += len;
         }
 
@@ -205,7 +206,7 @@ impl Worker {
                 let res = self.stream.send_message(Message{
                     message_id: MessageID::Interested,
                     payload: None,
-                }).await.ok();
+                }).await;
                 self.buf = vec![0; piece.2];
 
                 if res == None {
@@ -229,7 +230,7 @@ impl Worker {
                         if let Ok(msg) = message {
                             if msg.message_id == MessageID::Have {
                                 println!("Worker {} sending HAVE!", self.id);
-                                if let Err(_) = self.stream.send_message(msg).await {
+                                if self.stream.send_message(msg).await == None {
                                     break
                                 }
                             }
@@ -266,7 +267,7 @@ impl Worker {
                                 },
                             }
 
-                            // if not choked, send some messages
+                            // if not choked, send some requests
                             if !choked {
                                 if self.manage_io(&bf).await == None && disconnect {
                                     break

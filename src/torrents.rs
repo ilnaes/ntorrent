@@ -61,6 +61,7 @@ pub struct Torrent {
     pub pieces: WorkQueue<Piece>,
     pub files: Vec<FileInfo>,
     pub peer_id: Vec<u8>,
+    pub length: usize,
 }
 
 pub fn split_hash(pieces: Vec<u8>, piece_length: usize, length: usize) -> VecDeque<Piece> {
@@ -111,7 +112,7 @@ impl Torrent {
             }]
         };
 
-        let size = files.iter().map(|x| x.length).fold(0, |a, b| a + b);
+        let length = files.iter().map(|x| x.length).fold(0, |a, b| a + b);
 
         // randomly generate id
         let id: [u8; 20] = rand::random();
@@ -125,10 +126,11 @@ impl Torrent {
             pieces: WorkQueue::from(split_hash(
                 f.info.pieces.into_vec(),
                 f.info.piece_length,
-                size,
+                length,
             )),
             files,
             peer_id: id.as_ref().to_vec(),
+            length,
         }
     }
 }

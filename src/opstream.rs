@@ -1,6 +1,5 @@
-use crate::messages::Message;
+use crate::messages::{Message, MessageID};
 use crate::consts;
-use crate::err::ConnectError;
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 use tokio::prelude::*;
@@ -20,17 +19,28 @@ impl OpStream {
 
     pub async fn read_message(&mut self) -> Option<Message> {
         if let Some(s) = &mut self.stream {
-            return Message::read_from(s).await.ok()
+            let len: usize = timeout(consts::TIMEOUT, s.read_u32()).await.ok()?.ok()? as usize;
+
+            if len == 0 {
+                return  Some(Message { message_id: MessageID::KeepAlive, payload: None })
+            }
+
+            let mut buf = vec![0; len];
+            timeout(consts::TIMEOUT, s.read_exact(&mut buf)).await.ok()?.ok()?;
+            Some(Message{
+                message_id: Message::get_id(buf[0])?,
+                payload: Some(buf.drain(1..).collect()),
+            })
         } else {
             None
         }
     }
 
-    pub async fn send_message(&mut self, m: Message) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn send_message(&mut self, m: Message) -> Option<()> {
         if let Some(s) = &mut self.stream {
-            timeout(consts::TIMEOUT, s.write_all(m.serialize().as_slice())).await??;
-            return Ok(())
+            timeout(consts::TIMEOUT, s.write_all(m.serialize().as_slice())).await.ok()?.ok()?;
+            return Some(())
         }
-        Err(Box::new(ConnectError))
+        None
     }
 }

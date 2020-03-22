@@ -3,6 +3,7 @@ use std::process;
 use crate::client::Client;
 
 mod opstream;
+mod handshake;
 mod torrents;
 mod client;
 mod messages;

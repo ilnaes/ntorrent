@@ -39,19 +39,19 @@ impl<T> WorkQueue<T> {
     }
 
     // blocking pop
-    pub async fn pop_block(&mut self) -> T {
-        loop {
-            let mut q = self.q.lock().await;
-            let ret = q.pop_front();
-            if let Some(res) = ret {
-                return res
-            }
+    // pub async fn pop_block(&mut self) -> T {
+    //     loop {
+    //         let mut q = self.q.lock().await;
+    //         let ret = q.pop_front();
+    //         if let Some(res) = ret {
+    //             return res
+    //         }
 
-            // unlock and sleep
-            drop(q);
-            self.cond.notified().await;
-        }
-    }
+    //         // unlock and sleep
+    //         drop(q);
+    //         self.cond.notified().await;
+    //     }
+    // }
 
     // nonblocking pop, can return None
     pub async fn pop(&mut self) -> Option<T> {
@@ -93,8 +93,6 @@ impl<T> WorkQueue<T> {
 #[cfg(test)]
 mod test {
     use super::WorkQueue;
-    use tokio::time::timeout;
-    use std::time::Duration;
 
     #[tokio::test]
     async fn test_push_pop() {
@@ -115,14 +113,14 @@ mod test {
         assert_eq!(q.pop().await, Some(2));
     }
 
-    #[tokio::test]
-    async fn test_block() {
-        let mut q = WorkQueue::<i64>::new();
-        let res = timeout(Duration::from_millis(100), q.pop_block()).await.ok();
-        assert_eq!(res, None);
+//     #[tokio::test]
+//     async fn test_block() {
+//         let mut q = WorkQueue::<i64>::new();
+//         let res = timeout(Duration::from_millis(100), q.pop_block()).await.ok();
+//         assert_eq!(res, None);
 
-        q.push(1).await;
-        let res = timeout(Duration::from_millis(100), q.pop_block()).await.ok();
-        assert_eq!(res, Some(1));
-    }
+//         q.push(1).await;
+//         let res = timeout(Duration::from_millis(100), q.pop_block()).await.ok();
+//         assert_eq!(res, Some(1));
+//     }
 }

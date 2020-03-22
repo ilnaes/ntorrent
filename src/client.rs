@@ -1,4 +1,5 @@
 use crate::messages;
+use crate::handshake::Handshake;
 use crate::torrents::Torrent;
 use crate::peerlist::Peerlist;
 use crate::queue::WorkQueue;
@@ -19,7 +20,6 @@ pub struct Progress {
 pub struct Client {
     nworkers: u64,
     pub torrent: Torrent,
-    pub size: usize,
     pub handshake: Vec<u8>,
     pub peer_list: WorkQueue<String>,
     pub progress: Arc<Mutex<Progress>>,
@@ -30,22 +30,21 @@ pub struct Client {
 impl Client {
     pub fn new(s: &str) -> Client {
         let torrent = Torrent::new(s);
-        let left = torrent.files.iter().map(|x| x.length).fold(0, |a,b| a+b);
-        if left == 0 {
+        if torrent.length == 0 {
             panic!("no pieces");
         }
-        let handshake = messages::Handshake::from(&torrent).serialize();
-        let n = (left - 1) / (8 * torrent.piece_length) + 1;
+        let handshake = Handshake::from(&torrent).serialize();
+        let n = (torrent.length - 1) / (8 * torrent.piece_length) + 1;
+        let len = torrent.length;
 
         Client {
             nworkers: 1,
             torrent,
-            size: left,
             peer_list: WorkQueue::new(),
             progress: Arc::new(Mutex::new(Progress {
                 uploaded: 0,
                 downloaded: 0,
-                left
+                left: len,
             })),
             port: 2222,
             handshake,
@@ -76,7 +75,7 @@ impl Client {
     async fn receive(&mut self, mut mrx: mpsc::Receiver<(u64, usize, Vec<u8>)>, btx: broadcast::Sender<messages::Message>) -> Option<()> {
         let n = self.torrent.pieces.len().await;
         let mut received: usize = 0;
-        let mut buf = vec![0; self.size];
+        let mut buf = vec![0; self.torrent.length];
 
         while let Some((id, idx, res)) = mrx.recv().await {
             let start = idx * self.torrent.piece_length;
