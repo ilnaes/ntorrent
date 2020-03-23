@@ -1,6 +1,7 @@
-use byteorder::{BigEndian, WriteBytesExt};
+use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use serde::{Deserialize, Serialize};
 use serde_bytes::ByteBuf;
+use std::io::Cursor;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct TrackerResponse {
@@ -9,76 +10,94 @@ pub struct TrackerResponse {
 }
 
 #[derive(PartialEq, Debug, Clone)]
-pub enum MessageID {
+pub enum Message {
     KeepAlive,
     Choke,
     Unchoke,
     Interested,
     NotInterested,
-    Bitfield,
-    Request,
-    Have,
-    Piece,
-    Cancel,
-    Port,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Message {
-    pub message_id: MessageID,
-    pub payload: Option<Vec<u8>>,
+    Bitfield(Vec<u8>),
+    Request(u32, u32, u32),
+    Have(u32),
+    Piece(u32, u32, Vec<u8>),
+    // Cancel(u32, u32, u32),
+    // Port,
 }
 
 impl Message {
-    pub fn write_id(id: &MessageID) -> u8 {
-        match id {
-            MessageID::KeepAlive => 0,
-            MessageID::Choke => 0,
-            MessageID::Unchoke => 1,
-            MessageID::Interested => 2,
-            MessageID::NotInterested => 3,
-            MessageID::Have => 4,
-            MessageID::Bitfield => 5,
-            MessageID::Request => 6,
-            MessageID::Piece => 7,
-            MessageID::Cancel => 8,
-            MessageID::Port => 9,
+    pub fn deserialize(buf: Vec<u8>) -> Option<Message> {
+        print!("DER");
+        let mut cx = Cursor::new(buf);
+        let x = cx.read_u8().ok()?;
+        print!("{} ", x);
+        match x {
+            0 => Some(Message::Choke),
+            1 => Some(Message::Unchoke),
+            2 => Some(Message::Interested),
+            3 => Some(Message::NotInterested),
+            4 => {
+                let i = cx.read_u32::<BigEndian>().ok()?;
+                Some(Message::Have(i))
+            }
+            5 => Some(Message::Bitfield(cx.into_inner()[1..].to_vec())),
+            6 => {
+                let i = cx.read_u32::<BigEndian>().ok()?;
+                let s = cx.read_u32::<BigEndian>().ok()?;
+                let len = cx.read_u32::<BigEndian>().ok()?;
+                Some(Message::Request(i, s, len))
+            }
+            7 => {
+                let i = cx.read_u32::<BigEndian>().ok()?;
+                let s = cx.read_u32::<BigEndian>().ok()?;
+                println!("Piece {} {}", i, s);
+                Some(Message::Piece(i, s, cx.into_inner()[9..].to_vec()))
+            }
+            _ => panic!("BAD DESERIALIZE"),
         }
     }
 
-    pub fn get_id(u: u8) -> Option<MessageID> {
-        match u {
-            0 => Some(MessageID::Choke),
-            1 => Some(MessageID::Unchoke),
-            2 => Some(MessageID::Interested),
-            3 => Some(MessageID::NotInterested),
-            4 => Some(MessageID::Have),
-            5 => Some(MessageID::Bitfield),
-            6 => Some(MessageID::Request),
-            7 => Some(MessageID::Piece),
-            8 => Some(MessageID::Cancel),
-            9 => Some(MessageID::Port),
-            _ => None,
+    // serializes message to byte array
+    // consumes self
+    pub fn serialize(self) -> Vec<u8> {
+        let mut buf = vec![];
+        match self {
+            Message::Choke => {
+                WriteBytesExt::write_u8(&mut buf, 0).unwrap();
+            }
+            Message::Unchoke => {
+                WriteBytesExt::write_u8(&mut buf, 1).unwrap();
+            }
+            Message::Interested => {
+                WriteBytesExt::write_u8(&mut buf, 2).unwrap();
+            }
+            Message::NotInterested => {
+                WriteBytesExt::write_u8(&mut buf, 3).unwrap();
+            }
+            Message::Have(i) => {
+                WriteBytesExt::write_u8(&mut buf, 4).unwrap();
+                WriteBytesExt::write_u32::<BigEndian>(&mut buf, i).unwrap();
+            }
+            Message::Bitfield(v) => {
+                WriteBytesExt::write_u8(&mut buf, 5).unwrap();
+                buf.extend(v);
+            }
+            Message::Request(i, s, len) => {
+                WriteBytesExt::write_u8(&mut buf, 6).unwrap();
+                WriteBytesExt::write_u32::<BigEndian>(&mut buf, i).unwrap();
+                WriteBytesExt::write_u32::<BigEndian>(&mut buf, s).unwrap();
+                WriteBytesExt::write_u32::<BigEndian>(&mut buf, len).unwrap();
+            }
+            Message::Piece(i, s, payload) => {
+                WriteBytesExt::write_u8(&mut buf, 7).unwrap();
+                WriteBytesExt::write_u32::<BigEndian>(&mut buf, i).unwrap();
+                WriteBytesExt::write_u32::<BigEndian>(&mut buf, s).unwrap();
+                buf.extend(payload)
+            }
+            _ => {}
         }
-    }
-
-    pub fn serialize(&self) -> Vec<u8> {
-        if self.message_id == MessageID::KeepAlive {
-            return vec![0; 4];
-        }
-
-        let len = if let Some(v) = &self.payload {
-            1 + v.len()
-        } else {
-            1
-        };
-
         let mut res = vec![];
-        WriteBytesExt::write_u32::<BigEndian>(&mut res, len as u32).unwrap();
-        WriteBytesExt::write_u8(&mut res, Message::write_id(&self.message_id)).unwrap();
-        if let Some(v) = &self.payload {
-            res.extend(v);
-        }
+        WriteBytesExt::write_u32::<BigEndian>(&mut res, buf.len() as u32).unwrap();
+        res.extend(buf);
         res
     }
 }
@@ -86,12 +105,5 @@ impl Message {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn test_serialize() {
-        let m = super::Message {
-            message_id: super::MessageID::Have,
-            payload: Some(vec![1; 4]),
-        };
-
-        assert_eq!(m.serialize(), vec![0, 0, 0, 9, 4, 1, 1, 1, 1]);
-    }
+    fn test_serialize() {}
 }

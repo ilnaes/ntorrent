@@ -19,7 +19,7 @@ struct Info {
     pub length: Option<usize>,
     pub name: String,
     #[serde(rename = "piece length")]
-    pub piece_length: usize,
+    pub piece_length: u32,
     pub pieces: ByteBuf,
 }
 
@@ -38,12 +38,12 @@ impl TorrentFile {
 
 // hash * index * length
 #[derive(PartialEq, Debug, Clone)]
-pub struct Piece(pub [u8; 20], pub usize, pub usize);
+pub struct Piece(pub [u8; 20], pub u32, pub u32);
 
 impl Piece {
     // verifies that the buf matches the piece's hash
     pub fn verify(&self, buf: &Vec<u8>) -> bool {
-        if buf.len() != self.2 {
+        if buf.len() != self.2 as usize {
             return false;
         }
 
@@ -56,7 +56,7 @@ impl Piece {
 
 pub struct Torrent {
     pub announce: String,
-    pub piece_length: usize,
+    pub piece_length: u32,
     pub info_hash: Vec<u8>,
     pub pieces: WorkQueue<Piece>,
     pub files: Vec<FileInfo>,
@@ -85,9 +85,9 @@ pub fn split_hash(pieces: Vec<u8>, piece_length: usize, length: usize) -> VecDeq
 
         // make sure to record proper length of piece
         if i == num_pieces - 1 && length % piece_length != 0 {
-            res.push_back(Piece(new, i, length % piece_length));
+            res.push_back(Piece(new, i as u32, (length % piece_length) as u32));
         } else {
-            res.push_back(Piece(new, i, piece_length));
+            res.push_back(Piece(new, i as u32, piece_length as u32));
         }
     }
     res
@@ -125,7 +125,7 @@ impl Torrent {
             info_hash: hash.result().as_slice().to_vec(),
             pieces: WorkQueue::from(split_hash(
                 f.info.pieces.into_vec(),
-                f.info.piece_length,
+                f.info.piece_length as usize,
                 length,
             )),
             files,

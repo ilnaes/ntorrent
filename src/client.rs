@@ -1,4 +1,4 @@
-use crate::messages::messages::{Message, MessageID};
+use crate::messages::messages::Message;
 use crate::messages::handshake::Handshake;
 use crate::messages::ops::{Op, OpType};
 use crate::torrents::Torrent;
@@ -8,7 +8,6 @@ use crate::worker::Worker;
 use crate::utils::bitfield;
 use tokio::sync::{Mutex, mpsc, broadcast};
 use std::sync::Arc;
-use byteorder::{BigEndian, WriteBytesExt};
 use std::fs::File;
 use std::io::prelude::*;
 use std::path::Path;
@@ -38,7 +37,7 @@ impl Client {
         }
         let handshake = Handshake::from(&torrent).serialize();
 
-        let bf_len = (torrent.length - 1) / (8 * torrent.piece_length) + 1;
+        let bf_len = (torrent.length - 1) / (8 * torrent.piece_length as usize) + 1;
         let len = torrent.length;
         let n = torrent.pieces.len().await;
         let (btx, _) = broadcast::channel(n);
@@ -89,7 +88,7 @@ impl Client {
         while let Some(op) = mrx.recv().await {
             match op.op_type {
                 OpType::OpPiece(idx, res) => {
-                    let start = idx * self.torrent.piece_length;
+                    let start = idx as usize * self.torrent.piece_length as usize;
                     buf[start..start + res.len()].copy_from_slice(res.as_slice());
 
                     {
@@ -98,17 +97,15 @@ impl Client {
                         prog.downloaded += res.len();
                     }
                     // broadcast HAVE to all workers
-                    let mut payload = vec![];
-                    WriteBytesExt::write_u32::<BigEndian>(&mut payload, idx as u32).ok()?;
                     {
                         let btx = self.btx.lock().await;
-                        btx.send(Op {
+                        match btx.send(Op {
                             id: 0,
-                            op_type: OpType::OpMessage(Message{
-                                message_id: MessageID::Have,
-                                payload: Some(payload),
-                            })
-                        }).ok();
+                            op_type: OpType::OpMisc
+                        }).ok() {
+                            None => panic!("BADDD"),
+                            Some(_) => (),
+                        };
                     }
 
                     received += 1;

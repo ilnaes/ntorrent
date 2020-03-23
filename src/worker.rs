@@ -1,14 +1,14 @@
 use crate::client::Progress;
 use crate::torrents;
 use crate::messages::handshake::Handshake;
-use crate::messages::messages::{Message, MessageID};
+use crate::messages::messages::Message;
 use crate::messages::ops;
 use crate::consts;
 use crate::utils::bitfield;
 use crate::client;
 use crate::opstream::OpStream;
 use crate::utils::queue::WorkQueue;
-use crate::utils::{calc_request, read_piece};
+use crate::utils::calc_request;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex, broadcast};
 use tokio::net::TcpStream;
@@ -16,7 +16,6 @@ use tokio::prelude::*;
 use std::time::Duration;
 use tokio::time::timeout;
 use std::cmp::min;
-use byteorder::{ByteOrder, BigEndian};
 
 pub struct Worker {
     id: u64,
@@ -29,8 +28,8 @@ pub struct Worker {
 
     stream: OpStream,
     current: Option<torrents::Piece>,
-    requested: usize,
-    received: usize,
+    requested: u32,
+    received: u32,
     buf: Vec<u8>,
     brx: broadcast::Receiver<ops::Op>,
     tx: mpsc::Sender<ops::Op>,
@@ -100,19 +99,14 @@ impl Worker {
                     let b = self.bf.lock().await;
                     payload = b.bf.clone();
                 }
-                if self.stream.send_message(Message {
-                    message_id: MessageID::Bitfield,
-                    payload: Some(payload),
-                }).await == None {
+                if self.stream.send_message(Message::Bitfield(payload)).await == None {
                     continue
                 }
 
                 // get opposing bitfield
                 let response = self.stream.read_message().await;
                 if let Some(msg) = response {
-                    if msg.message_id == MessageID::Bitfield && msg.payload != None {
-                        let bf = msg.payload.unwrap();
-
+                    if let Message::Bitfield(bf) = msg {
                         {
                             // test length of bitfield
                             let own_bf = self.bf.lock().await;
@@ -134,7 +128,7 @@ impl Worker {
     // returns true if requested, false if no work piece, and None if error
     async fn manage_io(&mut self, bf: &bitfield::Bitfield) -> Option<bool> {
         if self.current == None {
-            self.current = self.work.find_first(|x| bf.has(x.1)).await;
+            self.current = self.work.find_first(|x| bf.has(x.1 as usize)).await;
             self.requested = 0;
             self.received = 0;
 
@@ -142,44 +136,45 @@ impl Worker {
                 Some(x) => x,
                 None => return Some(false),
             };
-            self.buf = vec![0; piece.2];
+            self.buf = vec![0; piece.2 as usize];
         }
 
         let piece = match &self.current {
             Some(x) => x,
             None => return Some(false)
         };
-        while self.requested < min(piece.2, self.received + consts::MAXREQUESTS * consts::BLOCKSIZE) {
-            let (msg, len) = calc_request(piece.1, self.requested, piece.2)?;
-            self.stream.send_message(Message {
-                message_id: MessageID::Request,
-                payload: Some(msg),
-            }).await?;
+        while self.requested < min(piece.2,
+                        self.received + consts::MAXREQUESTS * consts::BLOCKSIZE) {
+            let len = calc_request(self.requested, piece.2);
+            self.stream.send_message(Message::Request(
+                                        piece.1,
+                                        self.requested,
+                                        len
+                                    )).await?;
             self.requested += len;
         }
 
         Some(true)
     }
 
-    // adds data from payload into buf
-    async fn process_piece(&mut self, payload: Vec<u8>) -> Option<()> {
+    // adds data into buf
+    async fn process_piece(&mut self, i: u32, s: u32, buf: Vec<u8>) -> Option<()> {
         let piece = self.current.clone()?;
-        let (idx, start, buf) = read_piece(payload)?;
 
-        if idx != piece.1 {
+        if i != piece.1 {
             println!("Not correct piece");
             return None
         }
-        if start + buf.len() > self.buf.len() {
+        if s as usize + buf.len() > self.buf.len() {
             println!("Too large payload!");
-            println!("{} + {} > {}", start, buf.len(), self.buf.len());
+            println!("{} + {} > {}", s, buf.len(), self.buf.len());
             return None
         }
 
-        self.buf[start..start+buf.len()].copy_from_slice(buf.as_slice());
-        self.received += buf.len();
+        self.buf[s as usize..s as usize+buf.len()].copy_from_slice(buf.as_slice());
+        self.received += buf.len() as u32;
 
-        if self.received == piece.2 {
+        if self.received >= piece.2 {
             // received all of piece
             self.received = 0;
             self.current = None;
@@ -188,7 +183,7 @@ impl Worker {
             if piece.verify(&self.buf) {
                 if self.tx.send(ops::Op {
                     id: self.id,
-                    op_type: ops::OpType::OpPiece(idx, self.buf.split_off(0)),
+                    op_type: ops::OpType::OpPiece(i, self.buf.clone()),
                 }).await.ok() == None {
                     println!("Couldn't send!");
                     return None
@@ -208,16 +203,13 @@ impl Worker {
     // if disconnect, then will disconnect if no pieces to work on
     async fn interact(&mut self, bf: bitfield::Bitfield, disconnect: bool) {
         // find first piece
-        self.current = self.work.find_first(|x| bf.has(x.1)).await;
-        if let Some(piece) = self.current.as_ref() {
-            if self.stream.send_message(Message{
-                message_id: MessageID::Interested,
-                payload: None,
-            }).await == None {
+        self.current = self.work.find_first(|x| bf.has(x.1 as usize)).await;
+        if let Some(piece) = &self.current {
+            if self.stream.send_message(Message::Interested).await == None {
                 return
             }
 
-            self.buf = vec![0; piece.2];
+            self.buf = vec![0; piece.2 as usize];
         }
 
         if self.current == None && disconnect {
@@ -232,60 +224,54 @@ impl Worker {
 
         loop {
             tokio::select! {
-                op = self.brx.recv() => {
-                    if let Err(_) = op {
-                        break
-                    }
-                    let op = op.unwrap();
+                _ = self.brx.recv() => {
+                    println!("PINGED");
+                    // if let Err(_) = op {
+                    //     println!("ERROR 1");
+                    //     break
+                    // }
+                    // let op = op.unwrap();
 
-                    if op.id != 0 {
-                        continue
-                    }
+                    // if op.id != 0 {
+                    //     continue
+                    // }
 
-                    match op.op_type {
-                        ops::OpType::OpMessage(msg) => {
-                            if self.stream.send_message(msg).await == None {
-                                break
-                            }
-                        },
-                        _ => ()
-                    }
+                    // match op.op_type {
+                    //     ops::OpType::OpMessage(msg) => {
+                    //         // if self.stream.send_message(msg).await == None {
+                    //         //     break
+                    //         // }
+                    //     },
+                    //     _ => ()
+                    // }
                 },
                 msg = self.stream.read_message() => {
                     if msg == None {
                         break
                     }
 
-                    let msg = msg.unwrap();
-                    match msg.message_id {
-                        MessageID::Piece => {
-                            if self.process_piece(msg.payload.unwrap()).await == None {
+                    match msg.unwrap() {
+                        Message::Piece(idx, start, payload) => {
+                            if self.process_piece(idx, start, payload).await == None {
+                                println!("ERROR 2");
                                 break
                             }
                         },
-                        MessageID::Unchoke => {
+                        Message::Unchoke => {
                             println!("Worker {} unchoked!", self.id);
                             choked = false;
                         },
-                        MessageID::Choke => {
+                        Message::Choke => {
                             choked = true;
                         },
-                        MessageID::Have => {
-                            let buf = msg.payload.unwrap();
-                            let i = BigEndian::read_u32(&buf);
+                        Message::Have(i) => {
                             {
                                 let mut self_bf = self.bf.lock().await;
                                 self_bf.add(i as usize);
                             }
                         },
-                        MessageID::Request => {
-                            
-                        },
-                        MessageID::Interested => {
-                            if self.stream.send_message(Message {
-                                message_id: MessageID::Unchoke,
-                                payload: None,
-                            }).await == None {
+                        Message::Interested => {
+                            if self.stream.send_message(Message::Unchoke).await == None {
                                 break
                             }
                         },
