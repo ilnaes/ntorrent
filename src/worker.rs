@@ -279,7 +279,7 @@ impl Worker {
                             }
                         },
                         MessageID::Request => {
-
+                            
                         },
                         MessageID::Interested => {
                             if self.stream.send_message(Message {
