@@ -1,13 +1,13 @@
 use crate::messages::messages::Message;
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum OpID {
-    Message,
-    Exit,
+pub enum OpType {
+    OpMessage(Message),
+    OpPiece(usize, Vec<u8>),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Op {
-    pub op_id: OpID,
-    pub payload: Option<Message>,
+    pub id: u64,
+    pub op_type: OpType,
 }

@@ -23,7 +23,7 @@ pub enum MessageID {
     Port,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Message {
     pub message_id: MessageID,
     pub payload: Option<Vec<u8>>,

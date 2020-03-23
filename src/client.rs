@@ -1,6 +1,6 @@
 use crate::messages::messages::{Message, MessageID};
 use crate::messages::handshake::Handshake;
-use crate::messages::ops;
+use crate::messages::ops::{Op, OpType};
 use crate::torrents::Torrent;
 use crate::peerlist::Peerlist;
 use crate::utils::queue::WorkQueue;
@@ -27,17 +27,21 @@ pub struct Client {
     pub progress: Arc<Mutex<Progress>>,
     pub port: i64,
     pub bf: Arc<Mutex<bitfield::Bitfield>>,
+    pub btx: Arc<Mutex<broadcast::Sender<Op>>>,
 }
 
 impl Client {
-    pub fn new(s: &str) -> Client {
+    pub async fn new(s: &str) -> Client {
         let torrent = Torrent::new(s);
         if torrent.length == 0 {
             panic!("no pieces");
         }
         let handshake = Handshake::from(&torrent).serialize();
-        let n = (torrent.length - 1) / (8 * torrent.piece_length) + 1;
+
+        let bf_len = (torrent.length - 1) / (8 * torrent.piece_length) + 1;
         let len = torrent.length;
+        let n = torrent.pieces.len().await;
+        let (btx, _) = broadcast::channel(n);
 
         Client {
             nworkers: 1,
@@ -51,77 +55,93 @@ impl Client {
             port: 2222,
             handshake,
             bf: Arc::new(Mutex::new(bitfield::Bitfield {
-                bf: vec![0; n],
+                bf: vec![0; bf_len],
             })),
+            btx: Arc::new(Mutex::new(btx)),
         }
     }
 
-    async fn manage_workers(&mut self, peer_btx: broadcast::Sender<ops::Op>) {
-        let n = self.torrent.pieces.len().await;
-        let (mtx, mrx) = mpsc::channel(n);
-        let (btx, _) = broadcast::channel(n);
-        
+    async fn manage_listeners(&self) {
+    }
+
+    // spawns downloaders
+    async fn manage_workers(&self, mtx: mpsc::Sender<Op>) {
         for i in 0..self.nworkers {
             let tx = mtx.clone();
-            let rx = btx.subscribe();
+            let rx;
+            {
+                let btx = self.btx.lock().await;
+                rx = btx.subscribe();
+            }
             let mut w = Worker::from_client(&self, i, rx, tx.clone());
             tokio::spawn(async move {
-                w.download(true).await;
+                w.download().await;
             });
         }
-
-        // spin up receiver of pieces
-        self.receive(mrx, btx, peer_btx).await;
     }
 
-    async fn receive(&mut self, mut mrx: mpsc::Receiver<(u64, usize, Vec<u8>)>, btx: broadcast::Sender<ops::Op>, peer_btx: broadcast::Sender<ops::Op>) -> Option<()> {
+    // receives pieces and signals have messages
+    async fn receive(&self, mut mrx: mpsc::Receiver<Op>) -> Option<()> {
         let n = self.torrent.pieces.len().await;
         let mut received: usize = 0;
         let mut buf = vec![0; self.torrent.length];
 
-        while let Some((id, idx, res)) = mrx.recv().await {
-            let start = idx * self.torrent.piece_length;
-            buf[start..start + res.len()].copy_from_slice(res.as_slice());
+        while let Some(op) = mrx.recv().await {
+            match op.op_type {
+                OpType::OpPiece(idx, res) => {
+                    let start = idx * self.torrent.piece_length;
+                    buf[start..start + res.len()].copy_from_slice(res.as_slice());
 
-            {
-                // update progress
-                let mut prog = self.progress.lock().await;
-                prog.downloaded += res.len();
-            }
+                    {
+                        // update progress
+                        let mut prog = self.progress.lock().await;
+                        prog.downloaded += res.len();
+                    }
+                    // broadcast HAVE to all workers
+                    let mut payload = vec![];
+                    WriteBytesExt::write_u32::<BigEndian>(&mut payload, idx as u32).ok()?;
+                    {
+                        let btx = self.btx.lock().await;
+                        btx.send(Op {
+                            id: 0,
+                            op_type: OpType::OpMessage(Message{
+                                message_id: MessageID::Have,
+                                payload: Some(payload),
+                            })
+                        }).ok();
+                    }
 
-            // broadcast HAVE to all workers
-            let mut payload = vec![];
-            WriteBytesExt::write_u32::<BigEndian>(&mut payload, idx as u32).ok()?;
-            btx.send(ops::Op {
-                op_id: ops::OpID::Message,
-                payload: Some(Message{
-                    message_id: MessageID::Have,
-                    payload: Some(payload),
-                })
-            }).ok();
-
-            received += 1;
-            println!("Client got piece {} from {} --- {:.3}%", idx, id, 100f32 * (received as f32)/(n as f32));
-            
-            if received == n {
-                let path = Path::new("what.pdf");
-                let mut f = File::create(&path).ok()?;
-                f.write(buf.as_slice()).ok()?;
-
-                peer_btx.send(ops::Op {
-                    op_id: ops::OpID::Exit,
-                    payload: None,
-                }).ok();
-            
-                return Some(())
+                    received += 1;
+                    println!("Got piece {} from Worker {} --- {:.2}%", idx, op.id, 100f32 * (received as f32)/(n as f32));
+                    
+                    if received == n {
+                        return self.write_file(buf.as_slice());
+                    }
+                },
+                _ => (),
             }
         }
         Some(())
     }
 
+    fn write_file(&self, buf: &[u8]) -> Option<()> {
+        let path = Path::new("what.pdf");
+        let mut f = File::create(&path).ok()?;
+        f.write(buf).ok()?;
+        println!("FINISHED");
+        Some(())
+    }
+
     pub async fn download(&mut self) {
-        let (btx, rtx) = broadcast::channel(1);
         let mut peerlist = Peerlist::from(&self);
-        tokio::join!(peerlist.poll_peerlist(rtx), self.manage_workers(btx));
+        let n = self.torrent.pieces.len().await;
+        let (mtx, mrx) = mpsc::channel(n);
+
+        tokio::join!(
+            peerlist.poll_peerlist(),
+            self.manage_workers(mtx.clone()),
+            self.manage_listeners(),
+            self.receive(mrx),
+        );
     }
 }

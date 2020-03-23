@@ -17,6 +17,10 @@ impl OpStream {
         OpStream { stream: Some(s) }
     }
 
+    pub fn close(&mut self) {
+        self.stream.take();
+    }
+
     pub async fn read_message(&mut self) -> Option<Message> {
         if let Some(s) = &mut self.stream {
             let len: usize = timeout(consts::TIMEOUT, s.read_u32()).await.ok()?.ok()? as usize;

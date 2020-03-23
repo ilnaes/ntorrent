@@ -2,9 +2,8 @@ use crate::client::Progress;
 use crate::utils::serialize_bytes;
 use crate::client::Client;
 use crate::messages::messages::TrackerResponse;
-use crate::messages::ops;
 use crate::utils::queue::WorkQueue;
-use tokio::sync::{Mutex, broadcast};
+use tokio::sync::Mutex;
 use std::sync::Arc;
 use byteorder::{BigEndian, ReadBytesExt};
 use std::io::Cursor;
@@ -57,22 +56,12 @@ impl Peerlist {
         }
     }
 
-    pub async fn poll_peerlist(&mut self, mut rtx: broadcast::Receiver<ops::Op>) {
-        let mut exit = false;
-        while !exit {
+    pub async fn poll_peerlist(&mut self) {
+        loop {
             println!("Getting peerlist");
             self.get_peerlist().await;
             println!("Got peerlist");
-            loop {
-                tokio::select! {
-                    _ = rtx.recv() => {
-                        exit = true;
-                    },
-                    _ = tokio::time::delay_for(Duration::from_secs(self.interval)) => {
-                    },
-                }
-                break;
-            }
+            tokio::time::delay_for(Duration::from_secs(self.interval)).await;
         }
     }
 

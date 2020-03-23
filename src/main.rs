@@ -20,7 +20,7 @@ async fn main() {
         process::exit(0);
     }
 
-    let mut t = Client::new(&args[1]);
+    let mut t = Client::new(&args[1]).await;
 
     t.download().await;
 }
