@@ -1,5 +1,6 @@
 use crate::messages::messages::{Message, MessageID};
 use crate::messages::handshake::Handshake;
+use crate::messages::ops;
 use crate::torrents::Torrent;
 use crate::peerlist::Peerlist;
 use crate::utils::queue::WorkQueue;
@@ -55,7 +56,7 @@ impl Client {
         }
     }
 
-    async fn manage_workers(&mut self) {
+    async fn manage_workers(&mut self, peer_btx: broadcast::Sender<ops::Op>) {
         let n = self.torrent.pieces.len().await;
         let (mtx, mrx) = mpsc::channel(n);
         let (btx, _) = broadcast::channel(n);
@@ -70,10 +71,10 @@ impl Client {
         }
 
         // spin up receiver of pieces
-        self.receive(mrx, btx).await;
+        self.receive(mrx, btx, peer_btx).await;
     }
 
-    async fn receive(&mut self, mut mrx: mpsc::Receiver<(u64, usize, Vec<u8>)>, btx: broadcast::Sender<Message>) -> Option<()> {
+    async fn receive(&mut self, mut mrx: mpsc::Receiver<(u64, usize, Vec<u8>)>, btx: broadcast::Sender<ops::Op>, peer_btx: broadcast::Sender<ops::Op>) -> Option<()> {
         let n = self.torrent.pieces.len().await;
         let mut received: usize = 0;
         let mut buf = vec![0; self.torrent.length];
@@ -91,9 +92,12 @@ impl Client {
             // broadcast HAVE to all workers
             let mut payload = vec![];
             WriteBytesExt::write_u32::<BigEndian>(&mut payload, idx as u32).ok()?;
-            btx.send(Message{
-                message_id: MessageID::Have,
-                payload: Some(payload),
+            btx.send(ops::Op {
+                op_id: ops::OpID::Message,
+                payload: Some(Message{
+                    message_id: MessageID::Have,
+                    payload: Some(payload),
+                })
             }).ok();
 
             received += 1;
@@ -103,6 +107,12 @@ impl Client {
                 let path = Path::new("what.pdf");
                 let mut f = File::create(&path).ok()?;
                 f.write(buf.as_slice()).ok()?;
+
+                peer_btx.send(ops::Op {
+                    op_id: ops::OpID::Exit,
+                    payload: None,
+                }).ok();
+            
                 return Some(())
             }
         }
@@ -110,7 +120,8 @@ impl Client {
     }
 
     pub async fn download(&mut self) {
+        let (btx, rtx) = broadcast::channel(1);
         let mut peerlist = Peerlist::from(&self);
-        tokio::join!(peerlist.poll_peerlist(), self.manage_workers());
+        tokio::join!(peerlist.poll_peerlist(rtx), self.manage_workers(btx));
     }
 }

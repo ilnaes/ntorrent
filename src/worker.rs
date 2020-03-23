@@ -2,6 +2,7 @@ use crate::client::Progress;
 use crate::torrents;
 use crate::messages::handshake::Handshake;
 use crate::messages::messages::{Message, MessageID};
+use crate::messages::ops;
 use crate::consts;
 use crate::utils::bitfield;
 use crate::client;
@@ -31,12 +32,12 @@ pub struct Worker {
     requested: usize,
     received: usize,
     buf: Vec<u8>,
-    rx: broadcast::Receiver<Message>,
+    rx: broadcast::Receiver<ops::Op>,
     tx: mpsc::Sender<(u64, usize, Vec<u8>)>,
 }
 
 impl Worker {
-    pub fn from_client(c: &client::Client, i: u64, rx: broadcast::Receiver<Message>, tx: mpsc::Sender<(u64, usize, Vec<u8>)>) -> Worker {
+    pub fn from_client(c: &client::Client, i: u64, rx: broadcast::Receiver<ops::Op>, tx: mpsc::Sender<(u64, usize, Vec<u8>)>) -> Worker {
         Worker {
             id: i+1,
             progress: Arc::clone(&c.progress),
@@ -194,7 +195,8 @@ impl Worker {
     }
 
     pub async fn download(&mut self, disconnect: bool) {
-        loop {
+        let mut exit = false;
+        while !exit {
             let bf = self.connect().await;
 
             // get first piece
@@ -224,10 +226,19 @@ impl Worker {
             loop {
                 tokio::select! {
                     message = self.rx.recv() => {
-                        if let Ok(msg) = message {
-                            if msg.message_id == MessageID::Have {
-                                println!("Worker {} sending HAVE!", self.id);
-                                if self.stream.send_message(msg).await == None {
+                        if let Ok(op) = message {
+                            match op.op_id {
+                                ops::OpID::Message => {
+                                    if let Some(msg) = op.payload {
+                                        println!("Worker {} sending HAVE!", self.id);
+                                        if self.stream.send_message(msg).await == None {
+                                            break
+                                        }
+                                    }
+                                },
+                                ops::OpID::Exit => {
+                                    exit = true;
+                                    println!("HERE");
                                     break
                                 }
                             }
