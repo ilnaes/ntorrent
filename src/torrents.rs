@@ -117,8 +117,6 @@ impl Torrent {
         // randomly generate id
         let id: [u8; 20] = rand::random();
 
-        println!("Piece length: {}", f.info.piece_length);
-
         Torrent {
             announce: f.announce,
             piece_length: f.info.piece_length,

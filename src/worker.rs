@@ -224,26 +224,24 @@ impl Worker {
 
         loop {
             tokio::select! {
-                _ = self.brx.recv() => {
-                    println!("PINGED");
-                    // if let Err(_) = op {
-                    //     println!("ERROR 1");
-                    //     break
-                    // }
-                    // let op = op.unwrap();
+                op = self.brx.recv() => {
+                    if let Err(_) = op {
+                        break
+                    }
+                    let op = op.unwrap();
 
-                    // if op.id != 0 {
-                    //     continue
-                    // }
+                    if op.id != 0 {
+                        continue
+                    }
 
-                    // match op.op_type {
-                    //     ops::OpType::OpMessage(msg) => {
-                    //         // if self.stream.send_message(msg).await == None {
-                    //         //     break
-                    //         // }
-                    //     },
-                    //     _ => ()
-                    // }
+                    match op.op_type {
+                        ops::OpType::OpMessage(msg) => {
+                            if self.stream.send_message(msg).await == None {
+                                break
+                            }
+                        },
+                        _ => ()
+                    }
                 },
                 msg = self.stream.read_message() => {
                     if msg == None {
@@ -253,7 +251,6 @@ impl Worker {
                     match msg.unwrap() {
                         Message::Piece(idx, start, payload) => {
                             if self.process_piece(idx, start, payload).await == None {
-                                println!("ERROR 2");
                                 break
                             }
                         },
@@ -272,6 +269,14 @@ impl Worker {
                         },
                         Message::Interested => {
                             if self.stream.send_message(Message::Unchoke).await == None {
+                                break
+                            }
+                        },
+                        Message::Request(i, s, len) => {
+                            if self.tx.send(ops::Op {
+                                id: self.id,
+                                op_type: ops::OpType::OpRequest(i, s, len),
+                            }).await.ok() == None {
                                 break
                             }
                         },

@@ -1,7 +1,6 @@
 use crate::client::Progress;
 use crate::utils::serialize_bytes;
 use crate::client::Client;
-use crate::messages::messages::TrackerResponse;
 use crate::utils::queue::WorkQueue;
 use tokio::sync::Mutex;
 use std::sync::Arc;
@@ -9,6 +8,14 @@ use byteorder::{BigEndian, ReadBytesExt};
 use std::io::Cursor;
 use std::time::Duration;
 use std::collections::VecDeque;
+use serde::{Deserialize, Serialize};
+use serde_bytes::ByteBuf;
+
+#[derive(Serialize, Deserialize, Debug)]
+struct TrackerResponse {
+    pub interval: u64,
+    pub peers: ByteBuf,
+}
 
 pub struct Peerlist {
     progress: Arc<Mutex<Progress>>,

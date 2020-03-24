@@ -87,6 +87,19 @@ impl Client {
 
         while let Some(op) = mrx.recv().await {
             match op.op_type {
+                OpType::OpRequest(i, s, len) => {
+                    let mut have = false;
+                    {
+                        let bf = self.bf.lock().await;
+                        if bf.has(i as usize) {
+                            have = true
+                        }
+                    }
+
+                    if !have {
+                        
+                    }
+                },
                 OpType::OpPiece(idx, res) => {
                     let start = idx as usize * self.torrent.piece_length as usize;
                     buf[start..start + res.len()].copy_from_slice(res.as_slice());
@@ -99,13 +112,10 @@ impl Client {
                     // broadcast HAVE to all workers
                     {
                         let btx = self.btx.lock().await;
-                        match btx.send(Op {
+                        btx.send(Op {
                             id: 0,
-                            op_type: OpType::OpMisc
-                        }).ok() {
-                            None => panic!("BADDD"),
-                            Some(_) => (),
-                        };
+                            op_type: OpType::OpMessage(Message::Have(idx))
+                        }).ok()?;
                     }
 
                     received += 1;

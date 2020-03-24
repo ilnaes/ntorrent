@@ -4,8 +4,7 @@ use crate::messages::messages::Message;
 pub enum OpType {
     OpMessage(Message),
     OpPiece(u32, Vec<u8>),
-    OpMisc,
-    // OpRequest(u32),
+    OpRequest(u32, u32, u32),
 }
 
 #[derive(Debug, Clone, PartialEq)]

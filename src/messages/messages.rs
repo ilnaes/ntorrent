@@ -1,13 +1,5 @@
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
-use serde::{Deserialize, Serialize};
-use serde_bytes::ByteBuf;
 use std::io::Cursor;
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct TrackerResponse {
-    pub interval: u64,
-    pub peers: ByteBuf,
-}
 
 #[derive(PartialEq, Debug, Clone)]
 pub enum Message {
@@ -20,17 +12,14 @@ pub enum Message {
     Request(u32, u32, u32),
     Have(u32),
     Piece(u32, u32, Vec<u8>),
-    // Cancel(u32, u32, u32),
-    // Port,
+    Cancel(u32, u32, u32),
+    Port(u16),
 }
 
 impl Message {
     pub fn deserialize(buf: Vec<u8>) -> Option<Message> {
-        print!("DER");
         let mut cx = Cursor::new(buf);
-        let x = cx.read_u8().ok()?;
-        print!("{} ", x);
-        match x {
+        match cx.read_u8().ok()? {
             0 => Some(Message::Choke),
             1 => Some(Message::Unchoke),
             2 => Some(Message::Interested),
@@ -49,10 +38,19 @@ impl Message {
             7 => {
                 let i = cx.read_u32::<BigEndian>().ok()?;
                 let s = cx.read_u32::<BigEndian>().ok()?;
-                println!("Piece {} {}", i, s);
                 Some(Message::Piece(i, s, cx.into_inner()[9..].to_vec()))
             }
-            _ => panic!("BAD DESERIALIZE"),
+            8 => {
+                let i = cx.read_u32::<BigEndian>().ok()?;
+                let s = cx.read_u32::<BigEndian>().ok()?;
+                let len = cx.read_u32::<BigEndian>().ok()?;
+                Some(Message::Cancel(i, s, len))
+            }
+            9 => {
+                let p = cx.read_u16::<BigEndian>().ok()?;
+                Some(Message::Port(p))
+            }
+            _ => None,
         }
     }
 
@@ -95,10 +93,12 @@ impl Message {
             }
             _ => {}
         }
-        let mut res = vec![];
-        WriteBytesExt::write_u32::<BigEndian>(&mut res, buf.len() as u32).unwrap();
-        res.extend(buf);
-        res
+        buf
+
+        // let mut res = vec![];
+        // WriteBytesExt::write_u32::<BigEndian>(&mut res, buf.len() as u32).unwrap();
+        // res.extend(buf);
+        // res
     }
 }
 
