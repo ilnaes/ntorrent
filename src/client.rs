@@ -19,7 +19,8 @@ pub struct Progress {
 }
 
 pub struct Client {
-    nworkers: u64,
+    ndownloaders: u64,
+    nlisteners: u64,
     pub torrent: Torrent,
     pub handshake: Vec<u8>,
     pub peer_list: WorkQueue<String>,
@@ -43,7 +44,8 @@ impl Client {
         let (btx, _) = broadcast::channel(n);
 
         Client {
-            nworkers: 1,
+            ndownloaders: 3,
+            nlisteners: 1,
             torrent,
             peer_list: WorkQueue::new(),
             progress: Arc::new(Mutex::new(Progress {
@@ -60,27 +62,35 @@ impl Client {
         }
     }
 
-    async fn manage_listeners(&self) {
-    }
+    // spawns downloaders and listeners
+    async fn manage_workers(&mut self, mtx: mpsc::Sender<Op>) -> Vec<mpsc::Sender<Op>> {
+        let mut vec_mtx = Vec::new();
 
-    // spawns downloaders
-    async fn manage_workers(&self, mtx: mpsc::Sender<Op>) {
-        for i in 0..self.nworkers {
+        // spawn downloaders
+        for i in 0..self.ndownloaders {
             let tx = mtx.clone();
             let rx;
             {
                 let btx = self.btx.lock().await;
                 rx = btx.subscribe();
             }
-            let mut w = Worker::from_client(&self, i, rx, tx.clone());
+            let (mtx1, mrx1) = mpsc::channel::<Op>(self.torrent.length);
+            vec_mtx.push(mtx1);
+            let mut w = Worker::from_client(&self, i+1, rx, mrx1, tx.clone(), true);
             tokio::spawn(async move {
                 w.download().await;
             });
         }
+
+        // spawn listeners
+        for _i in self.ndownloaders..self.ndownloaders+self.nlisteners {
+        }
+
+        vec_mtx
     }
 
     // receives pieces and signals have messages
-    async fn receive(&self, mut mrx: mpsc::Receiver<Op>) -> Option<()> {
+    async fn receive(&self, mut mtx: Vec<mpsc::Sender<Op>>, mut mrx: mpsc::Receiver<Op>) -> Option<()> {
         let n = self.torrent.pieces.len().await;
         let mut received: usize = 0;
         let mut buf = vec![0; self.torrent.length];
@@ -97,20 +107,43 @@ impl Client {
                     }
 
                     if !have {
-                        
+                        // send disconnect for improper request
+                        if let Err(_) = mtx[i as usize-1].send(Op {
+                            id: 0,
+                            op_type: OpType::OpDisconnect,
+                        }).await {
+                            continue
+                        }
+                    } else {
+                        // send piece
+                        let start = i as usize * self.torrent.piece_length as usize;
+                        if let Err(_) = mtx[i as usize-1].send(Op {
+                            id: 0,
+                            op_type: OpType::OpMessage(Message::Piece(
+                                i, s, buf[start..start+len as usize].to_vec(),
+                            )),
+                        }).await {
+                        }
                     }
                 },
                 OpType::OpPiece(idx, res) => {
                     let start = idx as usize * self.torrent.piece_length as usize;
                     buf[start..start + res.len()].copy_from_slice(res.as_slice());
-
+                    {
+                        // check if already has piece
+                        let mut bf = self.bf.lock().await;
+                        if bf.has(idx as usize) {
+                            continue
+                        }
+                        bf.add(idx as usize);
+                    }
                     {
                         // update progress
                         let mut prog = self.progress.lock().await;
                         prog.downloaded += res.len();
                     }
-                    // broadcast HAVE to all workers
                     {
+                        // broadcast HAVE to all workers
                         let btx = self.btx.lock().await;
                         btx.send(Op {
                             id: 0,
@@ -144,11 +177,10 @@ impl Client {
         let n = self.torrent.pieces.len().await;
         let (mtx, mrx) = mpsc::channel(n);
 
+        let mtx = self.manage_workers(mtx.clone()).await;
         tokio::join!(
             peerlist.poll_peerlist(),
-            self.manage_workers(mtx.clone()),
-            self.manage_listeners(),
-            self.receive(mrx),
+            self.receive(mtx, mrx),
         );
     }
 }

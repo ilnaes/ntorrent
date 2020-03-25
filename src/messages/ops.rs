@@ -3,6 +3,7 @@ use crate::messages::messages::Message;
 #[derive(Debug, Clone, PartialEq)]
 pub enum OpType {
     OpMessage(Message),
+    OpDisconnect,
     OpPiece(u32, Vec<u8>),
     OpRequest(u32, u32, u32),
 }

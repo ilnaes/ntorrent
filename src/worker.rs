@@ -32,13 +32,16 @@ pub struct Worker {
     received: u32,
     buf: Vec<u8>,
     brx: broadcast::Receiver<ops::Op>,
+    mrx: mpsc::Receiver<ops::Op>,
     tx: mpsc::Sender<ops::Op>,
+    choked: bool,
+    disconnect: bool,
 }
 
 impl Worker {
-    pub fn from_client(c: &client::Client, i: u64, brx: broadcast::Receiver<ops::Op>, tx: mpsc::Sender<ops::Op>) -> Worker {
+    pub fn from_client(c: &client::Client, i: u64, brx: broadcast::Receiver<ops::Op>, mrx: mpsc::Receiver<ops::Op>, tx: mpsc::Sender<ops::Op>, disconnect: bool) -> Worker {
         Worker {
-            id: i+1,
+            id: i,
             progress: Arc::clone(&c.progress),
             peers: c.peer_list.clone(),
             work: c.torrent.pieces.clone(),
@@ -52,7 +55,10 @@ impl Worker {
             received: 0,
             buf: Vec::new(),
             brx,
+            mrx,
             tx,
+            choked: true,
+            disconnect,
         }
     }
 
@@ -198,10 +204,87 @@ impl Worker {
         Some(())
     }
 
+    // processes messages from other clients
+    async fn process_msg(&mut self, msg: Option<Message>, bf: &bitfield::Bitfield) -> Option<()> {
+        match msg.unwrap() {
+            Message::Piece(idx, start, payload) => {
+                if self.process_piece(idx, start, payload).await == None {
+                    return None
+                }
+            },
+            Message::Unchoke => {
+                println!("Worker {} unchoked!", self.id);
+                self.choked = false;
+            },
+            Message::Choke => {
+                self.choked = true;
+            },
+            Message::Have(i) => {
+                {
+                    let mut self_bf = self.bf.lock().await;
+                    self_bf.add(i as usize);
+                }
+            },
+            Message::Interested => {
+                self.stream.send_message(Message::Unchoke).await?;
+            },
+            Message::Request(i, s, len) => {
+                self.tx.send(ops::Op {
+                    id: self.id,
+                    op_type: ops::OpType::OpRequest(i, s, len),
+                }).await.ok()?;
+            },
+            _ => {
+            },
+        }
+
+        // if not choked, send some requests
+        if !self.choked {
+            if !self.manage_io(bf).await? && self.disconnect {
+                return None
+            }
+        }
+
+        Some(())
+    }
+
+    // processes operations from the client receiver
+    // returns Some(()) if successful, otherwise None
+    async fn process_op(&mut self, op: Option<ops::Op>) -> Option<()> {
+        let op = op.unwrap();
+
+        if op.id != 0 {
+            // not receiver id
+            return None
+        }
+
+        match op.op_type {
+            ops::OpType::OpMessage(msg) => {
+                // send message and update length sent
+                let mut n = 0;
+                if let Message::Piece(_,_,v) = &msg {
+                    n += v.len();
+                }
+                if self.stream.send_message(msg).await == None {
+                    return None
+                }
+
+                if n != 0 {
+                    let mut prog = self.progress.lock().await;
+                    prog.uploaded += n;
+                }
+                Some(())
+            },
+            ops::OpType::OpDisconnect => {
+                None
+            }
+            _ => None
+        }
+    }
+
     // interacts with a live connection
     // assumes bitfields have been exchanges, but no current piece
-    // if disconnect, then will disconnect if no pieces to work on
-    async fn interact(&mut self, bf: bitfield::Bitfield, disconnect: bool) {
+    async fn interact(&mut self, bf: bitfield::Bitfield) {
         // find first piece
         self.current = self.work.find_first(|x| bf.has(x.1 as usize)).await;
         if let Some(piece) = &self.current {
@@ -212,89 +295,30 @@ impl Worker {
             self.buf = vec![0; piece.2 as usize];
         }
 
-        if self.current == None && disconnect {
+        if self.current == None && self.disconnect {
             return
         }
 
         println!("Worker {} connected", self.id);
         self.received = 0;
         self.requested = 0;
-
-        let mut choked = true;
+        self.choked = true;
 
         loop {
             tokio::select! {
-                op = self.brx.recv() => {
-                    if let Err(_) = op {
+                op = self.mrx.recv() => {
+                    if self.process_op(op).await == None {
                         break
                     }
-                    let op = op.unwrap();
-
-                    if op.id != 0 {
-                        continue
-                    }
-
-                    match op.op_type {
-                        ops::OpType::OpMessage(msg) => {
-                            if self.stream.send_message(msg).await == None {
-                                break
-                            }
-                        },
-                        _ => ()
+                },
+                op = self.brx.recv() => {
+                    if self.process_op(op.ok()).await == None {
+                        break
                     }
                 },
                 msg = self.stream.read_message() => {
-                    if msg == None {
+                    if self.process_msg(msg, &bf).await == None {
                         break
-                    }
-
-                    match msg.unwrap() {
-                        Message::Piece(idx, start, payload) => {
-                            if self.process_piece(idx, start, payload).await == None {
-                                break
-                            }
-                        },
-                        Message::Unchoke => {
-                            println!("Worker {} unchoked!", self.id);
-                            choked = false;
-                        },
-                        Message::Choke => {
-                            choked = true;
-                        },
-                        Message::Have(i) => {
-                            {
-                                let mut self_bf = self.bf.lock().await;
-                                self_bf.add(i as usize);
-                            }
-                        },
-                        Message::Interested => {
-                            if self.stream.send_message(Message::Unchoke).await == None {
-                                break
-                            }
-                        },
-                        Message::Request(i, s, len) => {
-                            if self.tx.send(ops::Op {
-                                id: self.id,
-                                op_type: ops::OpType::OpRequest(i, s, len),
-                            }).await.ok() == None {
-                                break
-                            }
-                        },
-                        _ => {
-                        },
-                    }
-
-                    // if not choked, send some requests
-                    if !choked {
-                        match self.manage_io(&bf).await {
-                            None => break,
-                            Some(false) => {
-                                if disconnect {
-                                    break
-                                }
-                            },
-                            _ => (),
-                        }
                     }
                 },
             }
@@ -310,7 +334,7 @@ impl Worker {
     pub async fn download(&mut self) {
         loop {
             let bf = self.connect().await;
-            self.interact(bf, true).await; 
+            self.interact(bf).await; 
             self.stream.close();
         }
     }
