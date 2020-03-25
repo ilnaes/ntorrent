@@ -26,17 +26,6 @@ impl OpStream {
 
     pub async fn read_message(&mut self) -> Option<Message> {
         if let Some(s) = &mut self.stream {
-            // let len = timeout(consts::TIMEOUT, s.read_u32()).await.ok()?.ok()? as usize;
-            // if len > consts::BLOCKSIZE as usize + 1000 {
-            //     panic!("LEN {}", len);
-            // }
-
-            // if len == 0 {
-            //     return Some(Message::KeepAlive);
-            // }
-
-            // let mut buf = vec![0; len];
-            // timeout(consts::TIMEOUT, s.read_exact(&mut buf)).await.ok()?.ok()?;
             let buf = timeout(consts::TIMEOUT, s.next()).await.ok()??.ok()?;
             if buf.len() == 0 {
                 return Some(Message::KeepAlive);

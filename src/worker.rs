@@ -1,10 +1,10 @@
 use crate::client::Progress;
-use crate::torrents;
+use crate::torrents::Piece;
 use crate::messages::handshake::Handshake;
 use crate::messages::messages::Message;
-use crate::messages::ops;
-use crate::consts;
-use crate::utils::bitfield;
+use crate::messages::ops::*;
+use crate::consts::*;
+use crate::utils::bitfield::Bitfield;
 use crate::client;
 use crate::opstream::OpStream;
 use crate::utils::queue::WorkQueue;
@@ -21,25 +21,26 @@ pub struct Worker {
     id: u64,
     progress: Arc<Mutex<Progress>>,
     peers: WorkQueue<String>,
-    work: WorkQueue<torrents::Piece>,
+    work: WorkQueue<Piece>,
     handshake: Vec<u8>,
     info_hash: Vec<u8>,
-    bf: Arc<Mutex<bitfield::Bitfield>>,
+    bf: Arc<Mutex<Bitfield>>,
+    disconnect: bool,
 
     stream: OpStream,
-    current: Option<torrents::Piece>,
+    brx: broadcast::Receiver<Op>,  // broadcast receiver from client
+    mrx: mpsc::Receiver<Op>,       // individual receiver from client
+    tx: mpsc::Sender<Op>,          // transmitter back to client
+
+    buf: Vec<u8>,
+    current: Option<Piece>,
     requested: u32,
     received: u32,
-    buf: Vec<u8>,
-    brx: broadcast::Receiver<ops::Op>,
-    mrx: mpsc::Receiver<ops::Op>,
-    tx: mpsc::Sender<ops::Op>,
     choked: bool,
-    disconnect: bool,
 }
 
 impl Worker {
-    pub fn from_client(c: &client::Client, i: u64, brx: broadcast::Receiver<ops::Op>, mrx: mpsc::Receiver<ops::Op>, tx: mpsc::Sender<ops::Op>, disconnect: bool) -> Worker {
+    pub fn from_client(c: &client::Client, i: u64, brx: broadcast::Receiver<Op>, mrx: mpsc::Receiver<Op>, tx: mpsc::Sender<Op>, disconnect: bool) -> Worker {
         Worker {
             id: i,
             progress: Arc::clone(&c.progress),
@@ -48,39 +49,71 @@ impl Worker {
             handshake: c.handshake.clone(),
             info_hash: c.torrent.info_hash.clone(),
             bf: c.bf.clone(),
+            disconnect,
 
             stream: OpStream::new(),
+            brx,
+            mrx,
+            tx,
+
             current: None,
             requested: 0,
             received: 0,
             buf: Vec::new(),
-            brx,
-            mrx,
-            tx,
             choked: true,
-            disconnect,
         }
     }
 
-    // tries to connect to ip and handshake (with timeouts)
-    async fn handshake(&self, ip: &str) -> Option<TcpStream> {
-        let mut s = timeout(consts::TIMEOUT, TcpStream::connect(ip)).await.ok()?.ok()?;
+    // tries to connect to ip (with timeouts)
+    async fn connect(&self, ip: &str) -> Option<TcpStream> {
+        Some(timeout(TIMEOUT, TcpStream::connect(ip)).await.ok()?.ok()?)
+    }
 
+    // exchanges handshakes and exchanges bitfield with TcpStream
+    // returns opposing bitfield if successful
+    async fn protocol(&mut self, mut s: TcpStream) -> Option<Bitfield> {
         let mut buf = [0; 68];
-        timeout(consts::TIMEOUT, s.write_all(self.handshake.as_slice())).await.ok()?.ok()?;
-        timeout(consts::TIMEOUT, s.read(&mut buf)).await.ok()?.ok()?;
+        timeout(TIMEOUT, s.write_all(self.handshake.as_slice())).await.ok()?.ok()?;
+        timeout(TIMEOUT, s.read(&mut buf)).await.ok()?.ok()?;
 
         if let Some(h) = Handshake::deserialize(buf.to_vec()) {
             if h.info_hash != self.info_hash {
                 return None
             }
         }
-        Some(s)
+
+        self.stream = OpStream::from(s);
+
+        // send own bitfield
+        let payload: Vec<u8>;
+        {
+            let b = self.bf.lock().await;
+            payload = b.bf.clone();
+        }
+        if self.stream.send_message(Message::Bitfield(payload)).await == None {
+            return None
+        }
+
+        // get opposing bitfield
+        let response = self.stream.read_message().await;
+        let msg = response?;
+        if let Message::Bitfield(bf) = msg {
+            {
+                // test length of bitfield
+                let own_bf = self.bf.lock().await;
+                if own_bf.bf.len() != bf.len() {
+                    return None
+                }
+            }
+            Some(Bitfield { bf })
+        } else {
+            None
+        }
     }
 
     // repeatedly attempts to connect to a peer,
     // handshake and exchange bitfield until success
-    async fn connect(&mut self) -> bitfield::Bitfield {
+    async fn reach_peer(&mut self) -> Bitfield {
         loop {
             let ip: String;
             loop {
@@ -94,63 +127,36 @@ impl Worker {
             }
 
             println!("Worker {} attempting to connect to {}", self.id, ip);
-            let res = self.handshake(&ip).await;
-
-            if let Some(s) = res {
-                self.stream = OpStream::from(s);
-
-                // send own bitfield
-                let payload: Vec<u8>;
-                {
-                    let b = self.bf.lock().await;
-                    payload = b.bf.clone();
-                }
-                if self.stream.send_message(Message::Bitfield(payload)).await == None {
-                    continue
-                }
-
-                // get opposing bitfield
-                let response = self.stream.read_message().await;
-                if let Some(msg) = response {
-                    if let Message::Bitfield(bf) = msg {
-                        {
-                            // test length of bitfield
-                            let own_bf = self.bf.lock().await;
-                            if own_bf.bf.len() != bf.len() {
-                                continue
-                            }
-                        }
-                        return bitfield::Bitfield { bf }
-                    }
+            if let Some(s) = self.connect(&ip).await {
+                if let Some(bf) = self.protocol(s).await {
+                    return bf
                 }
             }
+
             println!("Worker {} not connected", self.id);
             // put ip back
             self.peers.push(ip).await;
         }
     }
 
-    // sends requests and pieces and chooses new work piece if necessary
-    // returns true if requested, false if no work piece, and None if error
-    async fn manage_io(&mut self, bf: &bitfield::Bitfield) -> Option<bool> {
+    async fn get_piece(&mut self, bf: &Bitfield) -> Option<()> {
         if self.current == None {
             self.current = self.work.find_first(|x| bf.has(x.1 as usize)).await;
             self.requested = 0;
             self.received = 0;
 
-            let piece = match &self.current {
-                Some(x) => x,
-                None => return Some(false),
-            };
+            let piece = self.current.as_ref()?;
             self.buf = vec![0; piece.2 as usize];
         }
 
-        let piece = match &self.current {
-            Some(x) => x,
-            None => return Some(false)
-        };
-        while self.requested < min(piece.2,
-                        self.received + consts::MAXREQUESTS * consts::BLOCKSIZE) {
+        Some(())
+    }
+
+    // sends requests and pieces and chooses new work piece if necessary
+    // returns true if requested and None if error
+    async fn manage_io(&mut self) -> Option<()> {
+        let piece = self.current.as_ref()?;
+        while self.requested < min(piece.2, self.received + MAXREQUESTS * BLOCKSIZE) {
             let len = calc_request(self.requested, piece.2);
             self.stream.send_message(Message::Request(
                                         piece.1,
@@ -160,7 +166,7 @@ impl Worker {
             self.requested += len;
         }
 
-        Some(true)
+        Some(())
     }
 
     // adds data into buf
@@ -187,9 +193,9 @@ impl Worker {
 
             // put piece back if doesn't match hash
             if piece.verify(&self.buf) {
-                if self.tx.send(ops::Op {
+                if self.tx.send(Op {
                     id: self.id,
-                    op_type: ops::OpType::OpPiece(i, self.buf.clone()),
+                    op_type: OpType::OpPiece(i, self.buf.clone()),
                 }).await.ok() == None {
                     println!("Couldn't send!");
                     return None
@@ -205,12 +211,10 @@ impl Worker {
     }
 
     // processes messages from other clients
-    async fn process_msg(&mut self, msg: Option<Message>, bf: &bitfield::Bitfield) -> Option<()> {
-        match msg.unwrap() {
+    async fn process_msg(&mut self, msg: Option<Message>, bf: &mut Bitfield) -> Option<()> {
+        match msg? {
             Message::Piece(idx, start, payload) => {
-                if self.process_piece(idx, start, payload).await == None {
-                    return None
-                }
+                self.process_piece(idx, start, payload).await?;
             },
             Message::Unchoke => {
                 println!("Worker {} unchoked!", self.id);
@@ -220,29 +224,19 @@ impl Worker {
                 self.choked = true;
             },
             Message::Have(i) => {
-                {
-                    let mut self_bf = self.bf.lock().await;
-                    self_bf.add(i as usize);
-                }
+                bf.add(i as usize);
             },
             Message::Interested => {
                 self.stream.send_message(Message::Unchoke).await?;
             },
             Message::Request(i, s, len) => {
-                self.tx.send(ops::Op {
+                self.tx.send(Op {
                     id: self.id,
-                    op_type: ops::OpType::OpRequest(i, s, len),
+                    op_type: OpType::OpRequest(i, s, len),
                 }).await.ok()?;
             },
             _ => {
             },
-        }
-
-        // if not choked, send some requests
-        if !self.choked {
-            if !self.manage_io(bf).await? && self.disconnect {
-                return None
-            }
         }
 
         Some(())
@@ -250,8 +244,8 @@ impl Worker {
 
     // processes operations from the client receiver
     // returns Some(()) if successful, otherwise None
-    async fn process_op(&mut self, op: Option<ops::Op>) -> Option<()> {
-        let op = op.unwrap();
+    async fn process_op(&mut self, op: Option<Op>) -> Option<()> {
+        let op = op?;
 
         if op.id != 0 {
             // not receiver id
@@ -259,7 +253,7 @@ impl Worker {
         }
 
         match op.op_type {
-            ops::OpType::OpMessage(msg) => {
+            OpType::OpMessage(msg) => {
                 // send message and update length sent
                 let mut n = 0;
                 if let Message::Piece(_,_,v) = &msg {
@@ -275,7 +269,7 @@ impl Worker {
                 }
                 Some(())
             },
-            ops::OpType::OpDisconnect => {
+            OpType::OpDisconnect => {
                 None
             }
             _ => None
@@ -284,25 +278,17 @@ impl Worker {
 
     // interacts with a live connection
     // assumes bitfields have been exchanges, but no current piece
-    async fn interact(&mut self, bf: bitfield::Bitfield) {
+    async fn interact(&mut self, mut bf: Bitfield) {
+        self.choked = true;
+
         // find first piece
-        self.current = self.work.find_first(|x| bf.has(x.1 as usize)).await;
-        if let Some(piece) = &self.current {
-            if self.stream.send_message(Message::Interested).await == None {
-                return
-            }
-
-            self.buf = vec![0; piece.2 as usize];
-        }
-
-        if self.current == None && self.disconnect {
+        if self.get_piece(&bf).await == None && self.disconnect {
             return
         }
-
+        if self.stream.send_message(Message::Interested).await == None {
+            return
+        }
         println!("Worker {} connected", self.id);
-        self.received = 0;
-        self.requested = 0;
-        self.choked = true;
 
         loop {
             tokio::select! {
@@ -317,10 +303,18 @@ impl Worker {
                     }
                 },
                 msg = self.stream.read_message() => {
-                    if self.process_msg(msg, &bf).await == None {
+                    if self.process_msg(msg, &mut bf).await == None {
                         break
                     }
                 },
+            }
+
+            if self.get_piece(&bf).await == None && self.disconnect {
+                return
+            }
+            // if not choked, send some requests
+            if !self.choked && self.manage_io().await == None {
+                break
             }
         }
 
@@ -331,9 +325,23 @@ impl Worker {
         }
     }
 
+    pub async fn upload(&mut self, mut peer_q: WorkQueue<TcpStream>, mut done: mpsc::Sender<()>) {
+        loop {
+            let peer = peer_q.pop_block().await;
+            if let Ok(addr) = peer.peer_addr() {
+                println!("Worker {} getting connection from {:?}", self.id, addr);
+            }
+            if let Some(bf) = self.protocol(peer).await {
+                self.interact(bf).await;
+                self.stream.close();
+                done.send(()).await.ok();
+            }
+        }
+    }
+
     pub async fn download(&mut self) {
         loop {
-            let bf = self.connect().await;
+            let bf = self.reach_peer().await;
             self.interact(bf).await; 
             self.stream.close();
         }

@@ -23,7 +23,7 @@ pub struct Peerlist {
     announce: String,
     info_hash: Vec<u8>,
     peer_id: Vec<u8>,
-    port: i64,
+    port: u16,
     list: WorkQueue<String>,
 }
 
@@ -78,14 +78,14 @@ impl Peerlist {
                           self.announce,
                           serialize_bytes(&self.info_hash),
                           serialize_bytes(&self.peer_id));
-        let mut params = vec![("port", self.port),
+        let mut params = vec![("port", self.port as u64),
                         ("compact", 1)];
 
         {
             let p = self.progress.lock().await;
-            params.extend(vec![("uploaded", p.uploaded as i64),
-                            ("downloaded", p.downloaded as i64),
-                            ("left", p.left as i64)]);
+            params.extend(vec![("uploaded", p.uploaded as u64),
+                            ("downloaded", p.downloaded as u64),
+                            ("left", p.left as u64)]);
         }
 
         let client = reqwest::Client::new();
