@@ -1,7 +1,7 @@
 use crate::client::Progress;
 use crate::utils::serialize_bytes;
 use crate::client::Client;
-use crate::utils::queue::WorkQueue;
+use crate::utils::queue::Queue;
 use tokio::sync::Mutex;
 use std::sync::Arc;
 use byteorder::{BigEndian, ReadBytesExt};
@@ -24,10 +24,10 @@ pub struct Peerlist {
     info_hash: Vec<u8>,
     peer_id: Vec<u8>,
     port: u16,
-    list: WorkQueue<String>,
+    list: Queue<String>,
 }
 
-fn parse_peerlist(buf: Vec<u8>) -> VecDeque<String> {
+fn parse_peerlist(buf: &[u8]) -> VecDeque<String> {
     if buf.len() % 6 != 0 {
         panic!("Peer list not correct length!");
     }
@@ -102,7 +102,7 @@ impl Peerlist {
         let res: TrackerResponse = serde_bencode::de::from_bytes(&res)
                                          .expect("Could not parse tracker response!");
 
-        self.list.replace(parse_peerlist(res.peers.to_vec())).await;
+        self.list.replace(parse_peerlist(res.peers.as_slice())).await;
         // hack for own tracker
         self.list.push("localhost:54331".to_string()).await;
         self.interval = res.interval;

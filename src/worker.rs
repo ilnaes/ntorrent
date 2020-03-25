@@ -7,7 +7,7 @@ use crate::consts::*;
 use crate::utils::bitfield::Bitfield;
 use crate::client;
 use crate::opstream::OpStream;
-use crate::utils::queue::WorkQueue;
+use crate::utils::queue::Queue;
 use crate::utils::calc_request;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex, broadcast};
@@ -20,8 +20,8 @@ use std::cmp::min;
 pub struct Worker {
     id: u64,
     progress: Arc<Mutex<Progress>>,
-    peers: WorkQueue<String>,
-    work: WorkQueue<Piece>,
+    peers: Queue<String>,
+    work: Queue<Piece>,
     handshake: Vec<u8>,
     info_hash: Vec<u8>,
     bf: Arc<Mutex<Bitfield>>,
@@ -40,7 +40,7 @@ pub struct Worker {
 }
 
 impl Worker {
-    pub fn from_client(c: &client::Client, i: u64, brx: broadcast::Receiver<Op>, mrx: mpsc::Receiver<Op>, tx: mpsc::Sender<Op>, disconnect: bool) -> Worker {
+    pub fn from_client(c: &client::Client, i: u64, brx: broadcast::Receiver<Op>, mrx: mpsc::Receiver<Op>, tx: mpsc::Sender<Op>) -> Worker {
         Worker {
             id: i,
             progress: Arc::clone(&c.progress),
@@ -49,7 +49,7 @@ impl Worker {
             handshake: c.handshake.clone(),
             info_hash: c.torrent.info_hash.clone(),
             bf: c.bf.clone(),
-            disconnect,
+            disconnect: false,
 
             stream: OpStream::new(),
             brx,
@@ -73,13 +73,17 @@ impl Worker {
     // returns opposing bitfield if successful
     async fn protocol(&mut self, mut s: TcpStream) -> Option<Bitfield> {
         let mut buf = [0; 68];
-        timeout(TIMEOUT, s.write_all(self.handshake.as_slice())).await.ok()?.ok()?;
-        timeout(TIMEOUT, s.read(&mut buf)).await.ok()?.ok()?;
+        if self.disconnect {
+            // inititor sends first handshake
+            timeout(TIMEOUT, s.write_all(self.handshake.as_slice())).await.ok()?.ok()?;
+        }
+        timeout(TIMEOUT, s.read_exact(&mut buf)).await.ok()?.ok()?;
 
-        if let Some(h) = Handshake::deserialize(buf.to_vec()) {
-            if h.info_hash != self.info_hash {
-                return None
-            }
+        if Handshake::deserialize(buf.as_ref())?.info_hash != self.info_hash {
+            return None
+        }
+        if !self.disconnect {
+            timeout(TIMEOUT, s.write_all(self.handshake.as_slice())).await.ok()?.ok()?;
         }
 
         self.stream = OpStream::from(s);
@@ -112,8 +116,8 @@ impl Worker {
     }
 
     // repeatedly attempts to connect to a peer,
-    // handshake and exchange bitfield until success
-    async fn reach_peer(&mut self) -> Bitfield {
+    // and handshake until success
+    async fn reach_peer(&mut self) -> TcpStream {
         loop {
             let ip: String;
             loop {
@@ -126,14 +130,10 @@ impl Worker {
                 }
             }
 
-            println!("Worker {} attempting to connect to {}", self.id, ip);
             if let Some(s) = self.connect(&ip).await {
-                if let Some(bf) = self.protocol(s).await {
-                    return bf
-                }
+                return s
             }
 
-            println!("Worker {} not connected", self.id);
             // put ip back
             self.peers.push(ip).await;
         }
@@ -217,7 +217,6 @@ impl Worker {
                 self.process_piece(idx, start, payload).await?;
             },
             Message::Unchoke => {
-                println!("Worker {} unchoked!", self.id);
                 self.choked = false;
             },
             Message::Choke => {
@@ -228,6 +227,13 @@ impl Worker {
             },
             Message::Interested => {
                 self.stream.send_message(Message::Unchoke).await?;
+                self.disconnect = false
+            },
+            Message::NotInterested => {
+                if self.current == None {
+                    return None
+                }
+                self.disconnect = true
             },
             Message::Request(i, s, len) => {
                 self.tx.send(Op {
@@ -319,21 +325,22 @@ impl Worker {
         }
 
         println!("Worker {} disconnecting", self.id);
+        self.stream.close();
         // if there is still work, return it to queue
         if let Some(piece) = self.current.take() {
             self.work.push(piece).await;
         }
     }
 
-    pub async fn upload(&mut self, mut peer_q: WorkQueue<TcpStream>, mut done: mpsc::Sender<()>) {
+    pub async fn upload(&mut self, mut peer_q: Queue<TcpStream>, mut done: mpsc::Sender<()>) {
         loop {
+            self.disconnect = false;
             let peer = peer_q.pop_block().await;
             if let Ok(addr) = peer.peer_addr() {
                 println!("Worker {} getting connection from {:?}", self.id, addr);
             }
             if let Some(bf) = self.protocol(peer).await {
                 self.interact(bf).await;
-                self.stream.close();
                 done.send(()).await.ok();
             }
         }
@@ -341,9 +348,14 @@ impl Worker {
 
     pub async fn download(&mut self) {
         loop {
-            let bf = self.reach_peer().await;
-            self.interact(bf).await; 
-            self.stream.close();
+            self.disconnect = true;
+            let peer = self.reach_peer().await;
+            if let Ok(addr) = peer.peer_addr() {
+                println!("Worker {} attempting to connect to {:?}", self.id, addr);
+            }
+            if let Some(bf) = self.protocol(peer).await {
+                self.interact(bf).await; 
+            }
         }
     }
 }

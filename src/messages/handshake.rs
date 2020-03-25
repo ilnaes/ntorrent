@@ -22,8 +22,7 @@ impl Handshake {
         res
     }
 
-    pub fn deserialize(msg: Vec<u8>) -> Option<Handshake> {
-        let buf = msg.as_slice();
+    pub fn deserialize(buf: &[u8]) -> Option<Handshake> {
         if buf[0] != 19 {
             return None;
         }

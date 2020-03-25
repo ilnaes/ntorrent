@@ -1,10 +1,12 @@
-use crate::utils::queue::WorkQueue;
+use crate::utils::queue::Queue;
 use serde::{Deserialize, Serialize};
 use serde_bytes::ByteBuf;
 use sha1::{Digest, Sha1};
 use std::collections::VecDeque;
 use std::fs;
 
+// The following three structs are used for
+// serde decoding of bencoded torrent files
 #[derive(Serialize, Deserialize, Debug)]
 pub struct FileInfo {
     pub length: usize,
@@ -21,6 +23,15 @@ struct Info {
     #[serde(rename = "piece length")]
     pub piece_length: u32,
     pub pieces: ByteBuf,
+}
+
+impl Info {
+    pub fn hash(&self) -> Vec<u8> {
+        let mut hash = Sha1::new();
+        let info = serde_bencode::to_bytes(&self).expect("Could not encode info hash!");
+        hash.input(info.as_slice());
+        hash.result().as_slice().to_vec()
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -58,7 +69,7 @@ pub struct Torrent {
     pub announce: String,
     pub piece_length: u32,
     pub info_hash: Vec<u8>,
-    pub pieces: WorkQueue<Piece>,
+    pub pieces: Queue<Piece>,
     pub files: Vec<FileInfo>,
     pub peer_id: Vec<u8>,
     pub length: usize,
@@ -96,11 +107,10 @@ pub fn split_hash(pieces: Vec<u8>, piece_length: usize, length: usize) -> VecDeq
 impl Torrent {
     pub fn new(s: &str) -> Torrent {
         let f = TorrentFile::new(s);
+        let info_hash = f.info.hash();
 
-        // calculate info hash
-        let mut hash = Sha1::new();
-        let info = serde_bencode::to_bytes(&f.info).expect("Could not encode info hash!");
-        hash.input(info.as_slice());
+        // randomly generate id
+        let id: [u8; 20] = rand::random();
 
         // if only one file, create new FileInfo
         let files = if let Some(file) = f.info.files {
@@ -114,14 +124,11 @@ impl Torrent {
 
         let length = files.iter().map(|x| x.length).fold(0, |a, b| a + b);
 
-        // randomly generate id
-        let id: [u8; 20] = rand::random();
-
         Torrent {
             announce: f.announce,
             piece_length: f.info.piece_length,
-            info_hash: hash.result().as_slice().to_vec(),
-            pieces: WorkQueue::from(split_hash(
+            info_hash,
+            pieces: Queue::from(split_hash(
                 f.info.pieces.into_vec(),
                 f.info.piece_length as usize,
                 length,

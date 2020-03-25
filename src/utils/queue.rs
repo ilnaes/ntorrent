@@ -2,13 +2,14 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::{Mutex, Notify};
 
+// thread safe queue
 #[derive(Debug)]
-pub struct WorkQueue<T> {
+pub struct Queue<T> {
     q: Arc<Mutex<VecDeque<T>>>,
     cond: Arc<Notify>,
 }
 
-impl<T> WorkQueue<T> {
+impl<T> Queue<T> {
     pub async fn push(&mut self, x: T) {
         let mut q = self.q.lock().await;    
         q.push_back(x);
@@ -20,6 +21,8 @@ impl<T> WorkQueue<T> {
         q.len()
     }
 
+    // find first item that satisfies the f filter
+    // does not block
     pub async fn find_first<F>(&mut self, f: F) -> Option<T>
         where F: Fn(&T) -> bool
     {
@@ -68,22 +71,22 @@ impl<T> WorkQueue<T> {
         self.cond.notify();
     }
 
-    pub fn from(queue: VecDeque<T>) -> WorkQueue<T> {
-        WorkQueue {
+    pub fn from(queue: VecDeque<T>) -> Queue<T> {
+        Queue {
             q: Arc::new(Mutex::new(queue)),
             cond: Arc::new(Notify::new()),
         }
     }
 
-    pub fn new() -> WorkQueue<T> {
-        WorkQueue {
+    pub fn new() -> Queue<T> {
+        Queue {
             q: Arc::new(Mutex::new(VecDeque::new())),
             cond: Arc::new(Notify::new()),
         }
     }
 
-    pub fn clone(&self) -> WorkQueue<T> {
-        WorkQueue {
+    pub fn clone(&self) -> Queue<T> {
+        Queue {
             q: Arc::clone(&self.q),
             cond: Arc::clone(&self.cond),
         }
@@ -92,13 +95,13 @@ impl<T> WorkQueue<T> {
 
 #[cfg(test)]
 mod test {
-    use super::WorkQueue;
+    use super::Queue;
     use std::time::Duration;
     use tokio::time::timeout;
 
     #[tokio::test]
     async fn test_push_pop() {
-        let mut q = WorkQueue::new();
+        let mut q = Queue::new();
         assert_eq!(q.pop().await, None);
 
         q.push(1).await;
@@ -108,7 +111,7 @@ mod test {
 
     #[tokio::test]
     async fn test_replace() {
-        let mut q = WorkQueue::new();
+        let mut q = Queue::new();
         q.replace(vec![3,2,1].into_iter().collect()).await;
 
         assert_eq!(q.pop().await, Some(3));
@@ -117,12 +120,19 @@ mod test {
 
     #[tokio::test]
     async fn test_block() {
-        let mut q = WorkQueue::<i64>::new();
+        let mut q = Queue::<i64>::new();
         let res = timeout(Duration::from_millis(100), q.pop_block()).await.ok();
         assert_eq!(res, None);
 
         q.push(1).await;
         let res = timeout(Duration::from_millis(100), q.pop_block()).await.ok();
         assert_eq!(res, Some(1));
+
+        let mut q1 = q.clone();
+        tokio::spawn(async move {
+            timeout(Duration::from_millis(50), q1.push(2)).await.ok();
+        });
+        let res = timeout(Duration::from_millis(100), q.pop_block()).await.ok();
+        assert_eq!(res, Some(2));
     }
 }

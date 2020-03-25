@@ -3,7 +3,7 @@ use crate::messages::handshake::Handshake;
 use crate::messages::ops::*;
 use crate::torrents::Torrent;
 use crate::peerlist::Peerlist;
-use crate::utils::queue::WorkQueue;
+use crate::utils::queue::Queue;
 use crate::worker::Worker;
 use crate::utils::bitfield::Bitfield;
 use tokio::sync::{Mutex, mpsc, broadcast};
@@ -24,21 +24,25 @@ pub struct Client {
     nlisteners: u64,
     pub torrent: Torrent,
     pub handshake: Vec<u8>,
-    pub peer_list: WorkQueue<String>,
+    pub peer_list: Queue<String>,
     pub progress: Arc<Mutex<Progress>>,
     pub port: u16,
     pub bf: Arc<Mutex<Bitfield>>,
     pub btx: Arc<Mutex<broadcast::Sender<Op>>>,
 }
 
-async fn listen(port: u16, mut peer_q: WorkQueue<TcpStream>, mut done_q: mpsc::Receiver<()>) -> Option<()>{
-    let mut listener = TcpListener::bind(format!("127.0.0.1:{}", port)).await.ok()?;
+async fn listen(port: u16, mut peer_q: Queue<TcpStream>, mut done_q: mpsc::Receiver<()>) {
+    let mut listener = match TcpListener::bind(format!("127.0.0.1:{}", port)).await {
+        Ok(l) => l,
+        Err(e) => panic!("Can't bind to port: {}", e),
+    };
     println!("Listening on port {}", port);
+
     while let Some(()) = done_q.recv().await {
-        let (socket, _addr) = listener.accept().await.ok()?;
-        peer_q.push(socket).await;
+        if let Ok((socket, _addr)) = listener.accept().await {
+            peer_q.push(socket).await;
+        }
     }
-    Some(())
 }
 
 impl Client {
@@ -58,7 +62,7 @@ impl Client {
             ndownloaders: 3,
             nlisteners: 1,
             torrent,
-            peer_list: WorkQueue::new(),
+            peer_list: Queue::new(),
             progress: Arc::new(Mutex::new(Progress {
                 uploaded: 0,
                 downloaded: 0,
@@ -74,7 +78,7 @@ impl Client {
     }
 
     // spawns downloaders and listeners
-    async fn manage_workers(&mut self, mtx: mpsc::Sender<Op>, peer_q: WorkQueue<TcpStream>, mut done_q: mpsc::Sender<()>) -> Vec<mpsc::Sender<Op>> {
+    async fn manage_workers(&mut self, mtx: mpsc::Sender<Op>, peer_q: Queue<TcpStream>, mut done_q: mpsc::Sender<()>) -> Vec<mpsc::Sender<Op>> {
         let mut vec_mtx = Vec::new();
 
         // spawn downloaders
@@ -86,7 +90,7 @@ impl Client {
             }
             let (mtx1, mrx1) = mpsc::channel::<Op>(self.torrent.length);
             vec_mtx.push(mtx1);
-            let mut w = Worker::from_client(&self, i+1, rx, mrx1, mtx.clone(), true);
+            let mut w = Worker::from_client(&self, i+1, rx, mrx1, mtx.clone());
             tokio::spawn(async move {
                 w.download().await;
             });
@@ -104,7 +108,7 @@ impl Client {
             let pq = peer_q.clone();
             let dq = done_q.clone();
 
-            let mut w = Worker::from_client(&self, i+1, rx, mrx1, mtx.clone(), false);
+            let mut w = Worker::from_client(&self, i+1, rx, mrx1, mtx.clone());
             tokio::spawn(async move {
                 w.upload(pq, dq).await;
             });
@@ -199,7 +203,7 @@ impl Client {
         // done queue for listeners
         let (done_tx, done_rx) = mpsc::channel(self.nlisteners as usize);
 
-        let peer_q = WorkQueue::new();
+        let peer_q = Queue::new();
 
         // vector of channels for workers <- client
         let vec_mtx = self.manage_workers(mtx, peer_q.clone(), done_tx).await;
