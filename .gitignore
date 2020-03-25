@@ -4,3 +4,4 @@ target/
 *.torrent
 **/tags
 *.pdf
+.DS_Store

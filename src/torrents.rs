@@ -106,31 +106,38 @@ pub fn split_hash(pieces: Vec<u8>, piece_length: usize, length: usize) -> VecDeq
 
 impl Torrent {
     pub fn new(s: &str) -> Torrent {
-        let f = TorrentFile::new(s);
-        let info_hash = f.info.hash();
+        let t = TorrentFile::new(s);
+        let info_hash = t.info.hash();
 
         // randomly generate id
         let id: [u8; 20] = rand::random();
 
         // if only one file, create new FileInfo
-        let files = if let Some(file) = f.info.files {
-            file
+        let mut files;
+        if let Some(file) = t.info.files {
+            files = file;
+
+            if t.info.name.len() > 0 {
+                for f in files.iter_mut() {
+                    f.path.insert(0, t.info.name.clone());
+                }
+            }
         } else {
-            vec![FileInfo {
-                length: f.info.length.unwrap(),
-                path: vec![f.info.name],
+            files = vec![FileInfo {
+                length: t.info.length.unwrap(),
+                path: vec![t.info.name],
             }]
         };
 
         let length = files.iter().map(|x| x.length).fold(0, |a, b| a + b);
 
         Torrent {
-            announce: f.announce,
-            piece_length: f.info.piece_length,
+            announce: t.announce,
+            piece_length: t.info.piece_length,
             info_hash,
             pieces: Queue::from(split_hash(
-                f.info.pieces.into_vec(),
-                f.info.piece_length as usize,
+                t.info.pieces.into_vec(),
+                t.info.piece_length as usize,
                 length,
             )),
             files,

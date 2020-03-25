@@ -22,6 +22,7 @@ pub struct Progress {
 pub struct Client {
     ndownloaders: u64,
     nlisteners: u64,
+    dir: String,
     pub torrent: Torrent,
     pub handshake: Vec<u8>,
     pub peer_list: Queue<String>,
@@ -46,7 +47,7 @@ async fn listen(port: u16, mut peer_q: Queue<TcpStream>, mut done_q: mpsc::Recei
 }
 
 impl Client {
-    pub async fn new(s: &str) -> Client {
+    pub async fn new(s: &str, dir: String) -> Client {
         let torrent = Torrent::new(s);
         if torrent.length == 0 {
             panic!("no pieces");
@@ -59,6 +60,7 @@ impl Client {
         let (btx, _) = broadcast::channel(n);
 
         Client {
+            dir,
             ndownloaders: 3,
             nlisteners: 1,
             torrent,
@@ -185,12 +187,29 @@ impl Client {
         }
     }
 
-    fn write_file(&self, buf: &[u8]) -> Option<()> {
-        let path = Path::new("what.pdf");
-        let mut f = File::create(&path).ok()?;
-        f.write(buf).ok()?;
+    fn write_file(&self, buf: &[u8]) {
+        let mut i = 0;
+
+        for f in self.torrent.files.iter() {
+            let mut path = self.dir.clone();
+            if path.len() > 0 {
+                path.push('/');
+            }
+            path.push_str(&f.path.join("/"));
+            println!("Writing to {}", path);
+            let path = Path::new(&path);
+
+            // create directories if necessary
+            let prefix = path.parent().unwrap();
+            std::fs::create_dir_all(prefix).unwrap();
+
+            let mut file = File::create(&path)
+                        .expect(&format!("Could not create {}", path.to_str().unwrap()));
+
+            file.write(&buf[i..i+f.length]).expect("Could not write to file");
+            i += f.length;
+        }
         println!("FINISHED");
-        Some(())
     }
 
     pub async fn download(&mut self) {
