@@ -6,6 +6,7 @@ pub enum OpType {
     OpDisconnect,
     OpPiece(u32, Vec<u8>),
     OpRequest(u32, u32, u32),
+    OpStop,
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -47,7 +47,7 @@ async fn listen(port: u16, mut peer_q: Queue<TcpStream>, mut done_q: mpsc::Recei
 }
 
 impl Client {
-    pub async fn new(s: &str, dir: String) -> Client {
+    pub async fn new(s: &str, dir: String, port: u16) -> Client {
         let torrent = Torrent::new(s);
         if torrent.length == 0 {
             panic!("no pieces");
@@ -60,9 +60,10 @@ impl Client {
         let (btx, _) = broadcast::channel(n);
 
         Client {
+            port,
             dir,
-            ndownloaders: 3,
-            nlisteners: 1,
+            ndownloaders: 10,
+            nlisteners: 10,
             torrent,
             peer_list: Queue::new(),
             progress: Arc::new(Mutex::new(Progress {
@@ -70,7 +71,6 @@ impl Client {
                 downloaded: 0,
                 left: len,
             })),
-            port: 2222,
             handshake,
             bf: Arc::new(Mutex::new(Bitfield {
                 bf: vec![0; bf_len],
@@ -125,6 +125,7 @@ impl Client {
         let n = self.torrent.pieces.len().await;
         let mut received: usize = 0;
         let mut buf = vec![0; self.torrent.length];
+        let mut served = 0;
 
         while let Some(op) = mrx.recv().await {
             match op.op_type {
@@ -142,12 +143,14 @@ impl Client {
 
                     // send piece
                     let start = i as usize * self.torrent.piece_length as usize;
-                    mtx[i as usize-1].send(Op {
+                    mtx[op.id as usize-1].send(Op {
                         id: 0,
                         op_type: OpType::OpMessage(Message::Piece(
                             i, s, buf[start+s as usize..start+s as usize+len as usize].to_vec(),
                         )),
                     }).await.ok();
+                    served += len as usize;
+                    println!("Serving piece {} to Worker {} --- {:.2} KB uploaded", i, op.id, served as f64/1024f64);
                 },
                 OpType::OpPiece(idx, res) => {
                     let start = idx as usize * self.torrent.piece_length as usize;
@@ -176,10 +179,15 @@ impl Client {
                     }
 
                     received += 1;
-                    println!("Got piece {} from Worker {} --- {:.2}%", idx, op.id, 100f32 * (received as f32)/(n as f32));
                     
+                    println!("Got piece {} from Worker {} --- {:.2}%", idx, op.id, 100f32 * (received as f32)/(n as f32));
                     if received == n {
                         self.write_file(buf.as_slice());
+                        let btx = self.btx.lock().await;
+                        btx.send(Op {
+                            id: 0,
+                            op_type: OpType::OpStop,
+                        }).ok();
                     }
                 },
                 _ => (),
@@ -201,7 +209,7 @@ impl Client {
 
             // create directories if necessary
             let prefix = path.parent().unwrap();
-            std::fs::create_dir_all(prefix).unwrap();
+            std::fs::create_dir_all(prefix).expect("Could not create directories");
 
             let mut file = File::create(&path)
                         .expect(&format!("Could not create {}", path.to_str().unwrap()));
@@ -228,7 +236,7 @@ impl Client {
         let vec_mtx = self.manage_workers(mtx, peer_q.clone(), done_tx).await;
 
         tokio::join!(
-            peerlist.poll_peerlist(),
+            peerlist.poll_peerlist(self.port == 4444),
             self.receive(vec_mtx, mrx),
             listen(self.port, peer_q, done_rx)
         );

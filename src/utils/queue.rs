@@ -57,13 +57,13 @@ impl<T> Queue<T> {
     }
 
     // nonblocking pop, can return None
-    pub async fn pop(&mut self) -> Option<T> {
-        let mut q = self.q.lock().await;
+    // pub async fn pop(&mut self) -> Option<T> {
+    //     let mut q = self.q.lock().await;
 
-        // notify on way out so don't start blockeds
-        self.cond.notify();
-        q.pop_front()
-    }
+    //     // notify on way out so don't start blockeds
+    //     self.cond.notify();
+    //     q.pop_front()
+    // }
     
     pub async fn replace(&mut self, q: VecDeque<T>) {
         let mut val = self.q.lock().await;
@@ -99,23 +99,23 @@ mod test {
     use std::time::Duration;
     use tokio::time::timeout;
 
-    #[tokio::test]
-    async fn test_push_pop() {
-        let mut q = Queue::new();
-        assert_eq!(q.pop().await, None);
+    // #[tokio::test]
+    // async fn test_push_pop() {
+        // let mut q = Queue::new();
+        // assert_eq!(q.pop().await, None);
 
-        q.push(1).await;
-        assert_eq!(q.pop().await, Some(1));
-        assert_eq!(q.pop().await, None);
-    }
+        // q.push(1).await;
+        // assert_eq!(q.pop().await, Some(1));
+        // assert_eq!(q.pop().await, None);
+    // }
 
     #[tokio::test]
     async fn test_replace() {
         let mut q = Queue::new();
         q.replace(vec![3,2,1].into_iter().collect()).await;
 
-        assert_eq!(q.pop().await, Some(3));
-        assert_eq!(q.pop().await, Some(2));
+        assert_eq!(q.pop_block().await, 3);
+        assert_eq!(q.pop_block().await, 2);
     }
 
     #[tokio::test]

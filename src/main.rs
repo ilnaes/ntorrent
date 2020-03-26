@@ -1,6 +1,5 @@
-use std::env;
-use std::process;
 use crate::client::Client;
+use clap::{Arg, App};
 
 mod opstream;
 mod torrents;
@@ -13,14 +12,21 @@ mod consts;
 
 #[tokio::main]
 async fn main() {
-    let args: Vec<String> = env::args().collect();
+    let matches = App::new("ntorrent")
+                    .arg(Arg::with_name("INPUT")
+                            .required(true)
+                            .help("The .torrent file you want to use")
+                            .index(1))
+                    .arg(Arg::with_name("p")
+                            .short("p")
+                            .help("The port you want to listen on (default: 4444)")
+                            .value_name("PORT"))
+                    .get_matches();
 
-    if args.len() != 2 {
-        println!("Need to input exactly one file.");
-        process::exit(0);
-    }
+    let file = matches.value_of("INPUT").unwrap();
+    let port: u16 = matches.value_of("p").unwrap_or("4444").parse().unwrap();
 
-    let mut t = Client::new(&args[1], String::new()).await;
+    let mut t = Client::new(file, String::new(), port).await;
 
     t.download().await;
 }

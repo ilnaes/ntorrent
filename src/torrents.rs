@@ -112,17 +112,18 @@ impl Torrent {
         // randomly generate id
         let id: [u8; 20] = rand::random();
 
-        // if only one file, create new FileInfo
         let mut files;
         if let Some(file) = t.info.files {
             files = file;
 
+            // append base dir in multidoc format
             if t.info.name.len() > 0 {
                 for f in files.iter_mut() {
                     f.path.insert(0, t.info.name.clone());
                 }
             }
         } else {
+            // if only one file, create new FileInfo
             files = vec![FileInfo {
                 length: t.info.length.unwrap(),
                 path: vec![t.info.name],

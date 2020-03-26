@@ -13,7 +13,6 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex, broadcast};
 use tokio::net::TcpStream;
 use tokio::prelude::*;
-use std::time::Duration;
 use tokio::time::timeout;
 use std::cmp::min;
 
@@ -37,6 +36,8 @@ pub struct Worker {
     requested: u32,
     received: u32,
     choked: bool,
+    interested: bool,
+    stop: bool,
 }
 
 impl Worker {
@@ -61,6 +62,8 @@ impl Worker {
             received: 0,
             buf: Vec::new(),
             choked: true,
+            interested: false,
+            stop: false,
         }
     }
 
@@ -115,30 +118,22 @@ impl Worker {
         }
     }
 
-    // repeatedly attempts to connect to a peer,
-    // and handshake until success
-    async fn reach_peer(&mut self) -> TcpStream {
-        loop {
-            let ip: String;
-            loop {
-                if let Some(s) = self.peers.pop().await {
-                    ip = s;
-                    break
-                } else {
-                    // wait 1s before getting another peer
-                    tokio::time::delay_for(Duration::from_secs(1)).await;
-                }
+    // attempts to connect to a peer
+    // handshakes and interacts
+    async fn reach_peer(&mut self, ip: String) {
+        if let Some(peer) = self.connect(&ip).await {
+            println!("Worker {} attempting to connect to {:?}", self.id, peer.peer_addr().unwrap());
+            if let Some(bf) = self.protocol(peer).await {
+                self.interact(bf).await; 
             }
-
-            if let Some(s) = self.connect(&ip).await {
-                return s
-            }
-
+        } else {
             // put ip back
             self.peers.push(ip).await;
         }
     }
 
+    // if current is empty, attempts to find a piece of work
+    // returns None if there aren't any
     async fn get_piece(&mut self, bf: &Bitfield) -> Option<()> {
         if self.current == None {
             self.current = self.work.find_first(|x| bf.has(x.1 as usize)).await;
@@ -224,6 +219,14 @@ impl Worker {
             },
             Message::Have(i) => {
                 bf.add(i as usize);
+
+                if self.current == None {
+                    // check if interested again
+                    if self.get_piece(&bf).await != None {
+                        self.interested = true;
+                        self.stream.send_message(Message::Interested).await?;
+                    }
+                }
             },
             Message::Interested => {
                 self.stream.send_message(Message::Unchoke).await?;
@@ -265,9 +268,7 @@ impl Worker {
                 if let Message::Piece(_,_,v) = &msg {
                     n += v.len();
                 }
-                if self.stream.send_message(msg).await == None {
-                    return None
-                }
+                self.stream.send_message(msg).await?;
 
                 if n != 0 {
                     let mut prog = self.progress.lock().await;
@@ -278,6 +279,10 @@ impl Worker {
             OpType::OpDisconnect => {
                 None
             }
+            OpType::OpStop => {
+                self.stop = true;
+                None
+            }
             _ => None
         }
     }
@@ -286,13 +291,18 @@ impl Worker {
     // assumes bitfields have been exchanges, but no current piece
     async fn interact(&mut self, mut bf: Bitfield) {
         self.choked = true;
+        self.interested = false;
 
         // find first piece
         if self.get_piece(&bf).await == None && self.disconnect {
             return
         }
-        if self.stream.send_message(Message::Interested).await == None {
-            return
+        if self.current != None {
+            if self.stream.send_message(Message::Interested).await == None {
+                return
+            } else {
+                self.interested = true;
+            }
         }
         println!("Worker {} connected", self.id);
 
@@ -315,8 +325,17 @@ impl Worker {
                 },
             }
 
-            if self.get_piece(&bf).await == None && self.disconnect {
-                return
+            if self.get_piece(&bf).await == None {
+                // if no more pieces, send not interested
+                if self.interested {
+                    self.interested = false;
+                    if self.stream.send_message(Message::NotInterested).await == None {
+                        break
+                    }
+                }
+                if self.disconnect {
+                    break
+                }
             }
             // if not choked, send some requests
             if !self.choked && self.manage_io().await == None {
@@ -332,30 +351,46 @@ impl Worker {
         }
     }
 
+    // interacts with anyone trying to connect
+    // will never stop
     pub async fn upload(&mut self, mut peer_q: Queue<TcpStream>, mut done: mpsc::Sender<()>) {
         loop {
             self.disconnect = false;
-            let peer = peer_q.pop_block().await;
-            if let Ok(addr) = peer.peer_addr() {
-                println!("Worker {} getting connection from {:?}", self.id, addr);
-            }
-            if let Some(bf) = self.protocol(peer).await {
-                self.interact(bf).await;
-                done.send(()).await.ok();
+            tokio::select! {
+                peer = peer_q.pop_block() => {
+                    if let Ok(addr) = peer.peer_addr() {
+                        println!("Worker {} getting connection from {:?}", self.id, addr);
+                    }
+                    if let Some(bf) = self.protocol(peer).await {
+                        self.interact(bf).await;
+                        done.send(()).await.ok();
+                    }
+                },
+                _ = self.brx.recv() => {
+                    // throw away broadcasts
+                },
             }
         }
     }
 
+    // attempts to proactively download pieces,
+    // can stop once all pieces are downloaded
     pub async fn download(&mut self) {
-        loop {
+        while !self.stop {
             self.disconnect = true;
-            let peer = self.reach_peer().await;
-            if let Ok(addr) = peer.peer_addr() {
-                println!("Worker {} attempting to connect to {:?}", self.id, addr);
-            }
-            if let Some(bf) = self.protocol(peer).await {
-                self.interact(bf).await; 
+            tokio::select! {
+                ip = self.peers.pop_block() => {
+                    self.reach_peer(ip).await;
+                },
+                Ok(op) = self.brx.recv() => {
+                    if op.op_type == OpType::OpStop {
+                        self.stop = true;
+                    }
+                },
+                else => {}
             }
         }
+
+        println!("Worker {} stopping", self.id);
     }
 }
