@@ -48,12 +48,12 @@ impl TorrentFile {
 }
 
 // hash * index * length
-#[derive(PartialEq, Debug, Clone)]
+#[derive(PartialEq, Debug, Clone, Copy)]
 pub struct Piece(pub [u8; 20], pub u32, pub u32);
 
 impl Piece {
     // verifies that the buf matches the piece's hash
-    pub fn verify(&self, buf: &Vec<u8>) -> bool {
+    pub fn verify(&self, buf: &[u8]) -> bool {
         if buf.len() != self.2 as usize {
             return false;
         }
@@ -105,7 +105,7 @@ pub fn split_hash(pieces: Vec<u8>, piece_length: usize, length: usize) -> VecDeq
 }
 
 impl Torrent {
-    pub fn new(s: &str) -> Torrent {
+    pub fn new(s: &str, dir: String) -> Torrent {
         let t = TorrentFile::new(s);
         let info_hash = t.info.hash();
 
@@ -120,13 +120,22 @@ impl Torrent {
             if t.info.name.len() > 0 {
                 for f in files.iter_mut() {
                     f.path.insert(0, t.info.name.clone());
+
+                    if dir != "" {
+                        f.path.insert(0, dir.clone());
+                    }
                 }
             }
         } else {
             // if only one file, create new FileInfo
+            let mut path = vec![t.info.name];
+
+            if dir != "" {
+                path.insert(0, dir.clone());
+            }
             files = vec![FileInfo {
                 length: t.info.length.unwrap(),
-                path: vec![t.info.name],
+                path,
             }]
         };
 

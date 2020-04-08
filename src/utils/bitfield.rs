@@ -25,6 +25,14 @@ impl Bitfield {
         let j = 7 - x % 8;
         self.bf[i] = self.bf[i] | (1 << j);
     }
+
+    pub fn len(&self) -> usize {
+        self.bf.len()
+    }
+
+    pub fn from(bf: Vec<u8>) -> Bitfield {
+        Bitfield { bf }
+    }
 }
 
 #[cfg(test)]

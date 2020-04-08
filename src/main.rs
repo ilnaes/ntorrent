@@ -28,5 +28,11 @@ async fn main() {
 
     let mut t = Client::new(file, String::new(), port).await;
 
-    t.download().await;
+    let res = t.has().await;
+
+    if res == None {
+        t.download().await;
+    } else {
+        t.upload().await;
+    }
 }

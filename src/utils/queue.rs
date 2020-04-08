@@ -16,6 +16,10 @@ impl<T> Queue<T> {
         self.cond.notify();
     }
 
+    pub fn get_q(&self) -> Arc<Mutex<VecDeque<T>>> {
+        Arc::clone(&self.q)
+    }
+
     pub async fn len(&self) -> usize {
         let q = self.q.lock().await;
         q.len()
