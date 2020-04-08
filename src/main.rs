@@ -31,8 +31,9 @@ async fn main() {
     let res = t.has().await;
 
     if res == None {
-        t.download().await;
-    } else {
-        t.upload().await;
+        t.serve(true).await;
+    } else if res == Some(true) {
+        println!("SEEDING");
+        t.serve(false).await;
     }
 }

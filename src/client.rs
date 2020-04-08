@@ -129,7 +129,7 @@ impl Client {
                             all = false;
                             break
                         } else {
-                            if (i/(len as u64)) % 10 == 9 {
+                            if (i/(len as u64)) % 100 == 99 {
                                 println!("Verified {:.2}%", 100f64 * (i+len as u64) as f64/self.torrent.length as f64);
                             }
                         }
@@ -145,6 +145,8 @@ impl Client {
                     let mut bf = self.bf.lock().await;
                     let len = bf.len();
                     *bf = Bitfield::from(vec![255; len]);
+
+                    self.torrent.pieces.clear().await;
                 }
             }
             Some(all)
@@ -153,26 +155,30 @@ impl Client {
 
 
     // spawns downloaders and listeners
-    async fn manage_workers(&mut self, mtx: mpsc::Sender<Op>, peer_q: Queue<TcpStream>, mut done_q: mpsc::Sender<()>) -> Vec<mpsc::Sender<Op>> {
+    async fn manage_workers(&mut self, mtx: mpsc::Sender<Op>, peer_q: Queue<TcpStream>, mut done_q: mpsc::Sender<()>, download: bool) -> Vec<mpsc::Sender<Op>> {
         let mut vec_mtx = Vec::new();
+        let mut i = 0;
 
-        // spawn downloaders
-        for i in 0..self.ndownloaders {
-            let rx;
-            {
-                let btx = self.btx.lock().await;
-                rx = btx.subscribe();
+        if download {
+            // spawn downloaders
+            for _ in 0..self.ndownloaders {
+                let rx;
+                {
+                    let btx = self.btx.lock().await;
+                    rx = btx.subscribe();
+                }
+                let (mtx1, mrx1) = mpsc::channel::<Op>(self.torrent.length);
+                vec_mtx.push(mtx1);
+                let mut w = Worker::from_client(&self, i+1, rx, mrx1, mtx.clone());
+                tokio::spawn(async move {
+                    w.download().await;
+                });
+                i += 1;
             }
-            let (mtx1, mrx1) = mpsc::channel::<Op>(self.torrent.length);
-            vec_mtx.push(mtx1);
-            let mut w = Worker::from_client(&self, i+1, rx, mrx1, mtx.clone());
-            tokio::spawn(async move {
-                w.download().await;
-            });
         }
 
         // spawn listeners
-        for i in self.ndownloaders..self.ndownloaders+self.nlisteners {
+        for _ in 0..self.nlisteners {
             let rx;
             {
                 let btx = self.btx.lock().await;
@@ -188,6 +194,7 @@ impl Client {
                 w.upload(pq, dq).await;
             });
             done_q.send(()).await.ok();
+            i += 1;
         }
 
         vec_mtx
@@ -288,16 +295,12 @@ impl Client {
         println!("FINISHED");
     }
 
-    pub async fn upload(&self) {
-
-    }
-
-    pub async fn download(&mut self) {
+    pub async fn serve(&mut self, download: bool) {
         let mut peerlist = Peerlist::from(&self);
         let n = self.torrent.pieces.len().await;
 
         // channel for client <- workers
-        let (mtx, mrx) = mpsc::channel(n);
+        let (mtx, mrx) = mpsc::channel(std::cmp::max(n, 10));
 
         // done queue for listeners
         let (done_tx, done_rx) = mpsc::channel(self.nlisteners as usize);
@@ -305,7 +308,7 @@ impl Client {
         let peer_q = Queue::new();
 
         // vector of channels for workers <- client
-        let vec_mtx = self.manage_workers(mtx, peer_q.clone(), done_tx).await;
+        let vec_mtx = self.manage_workers(mtx, peer_q.clone(), done_tx, download).await;
 
         let port = self.port;
 

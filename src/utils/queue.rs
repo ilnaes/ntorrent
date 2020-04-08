@@ -60,6 +60,11 @@ impl<T> Queue<T> {
         }
     }
 
+    pub async fn clear(&mut self) {
+        let mut q = self.q.lock().await;
+        *q = VecDeque::new();
+    }
+
     // nonblocking pop, can return None
     // pub async fn pop(&mut self) -> Option<T> {
     //     let mut q = self.q.lock().await;
