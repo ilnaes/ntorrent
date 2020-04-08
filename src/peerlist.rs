@@ -63,16 +63,16 @@ impl Peerlist {
         }
     }
 
-    pub async fn poll_peerlist(&mut self, x: bool) {
+    pub async fn poll_peerlist(&mut self) {
         loop {
             println!("Getting peerlist");
-            self.get_peerlist(x).await;
+            self.get_peerlist().await;
             println!("Got peerlist");
             tokio::time::delay_for(Duration::from_secs(self.interval)).await;
         }
     }
 
-    async fn get_peerlist(&mut self, x: bool) {
+    async fn get_peerlist(&mut self) {
         // manually encode bytes
         let url = format!("{}?info_hash={}&peer_id={}",
                           self.announce,
@@ -104,11 +104,11 @@ impl Peerlist {
 
         self.list.replace(parse_peerlist(res.peers.as_slice())).await;
         // hack for own tracker
-        if x {
-            self.list.push("localhost:54331".to_string()).await;
-        } else {
-            self.list.push(format!("localhost:{}", 4444).to_string()).await;
-        }
+        // if x {
+        //     self.list.push("localhost:54331".to_string()).await;
+        // } else {
+        //     self.list.push(format!("localhost:{}", 4444).to_string()).await;
+        // }
         self.interval = res.interval;
     }
 }

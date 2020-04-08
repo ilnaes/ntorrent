@@ -236,7 +236,7 @@ impl Client {
         let vec_mtx = self.manage_workers(mtx, peer_q.clone(), done_tx).await;
 
         tokio::join!(
-            peerlist.poll_peerlist(self.port == 4444),
+            peerlist.poll_peerlist(),
             self.receive(vec_mtx, mrx),
             listen(self.port, peer_q, done_rx)
         );

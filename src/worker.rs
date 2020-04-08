@@ -36,7 +36,6 @@ pub struct Worker {
     requested: u32,
     received: u32,
     choked: bool,
-    interested: bool,
     stop: bool,
 }
 
@@ -62,7 +61,6 @@ impl Worker {
             received: 0,
             buf: Vec::new(),
             choked: true,
-            interested: false,
             stop: false,
         }
     }
@@ -80,7 +78,7 @@ impl Worker {
             // inititor sends first handshake
             timeout(TIMEOUT, s.write_all(self.handshake.as_slice())).await.ok()?.ok()?;
         }
-        timeout(TIMEOUT, s.read_exact(&mut buf)).await.ok()?.ok()?;
+        timeout(TIMEOUT, s.read(&mut buf)).await.ok()?.ok()?;
 
         if Handshake::deserialize(buf.as_ref())?.info_hash != self.info_hash {
             return None
@@ -165,7 +163,8 @@ impl Worker {
     }
 
     // adds data into buf
-    async fn process_piece(&mut self, i: u32, s: u32, buf: Vec<u8>) -> Option<()> {
+    // queues up new piece if necessary
+    async fn process_piece(&mut self, i: u32, s: u32, buf: Vec<u8>, bf: &Bitfield) -> Option<()> {
         let piece = self.current.clone()?;
 
         if i != piece.1 {
@@ -186,8 +185,9 @@ impl Worker {
             self.received = 0;
             self.current = None;
 
-            // put piece back if doesn't match hash
             if piece.verify(&self.buf) {
+                // verified piece
+
                 if self.tx.send(Op {
                     id: self.id,
                     op_type: OpType::OpPiece(i, self.buf.clone()),
@@ -195,7 +195,19 @@ impl Worker {
                     println!("Couldn't send!");
                     return None
                 }
+
+                // get new piece
+                if self.get_piece(&bf).await == None {
+                    // if no more pieces, send not interested
+                    if self.stream.send_message(Message::NotInterested).await == None {
+                        return None
+                    }
+                    if self.disconnect {
+                        return None
+                    }
+                }
             } else {
+                // put piece back if doesn't match hash
                 self.work.push(piece).await;
                 println!("Couldn't verify!");
                 return None
@@ -209,7 +221,7 @@ impl Worker {
     async fn process_msg(&mut self, msg: Option<Message>, bf: &mut Bitfield) -> Option<()> {
         match msg? {
             Message::Piece(idx, start, payload) => {
-                self.process_piece(idx, start, payload).await?;
+                self.process_piece(idx, start, payload, bf).await?;
             },
             Message::Unchoke => {
                 self.choked = false;
@@ -223,7 +235,6 @@ impl Worker {
                 if self.current == None {
                     // check if interested again
                     if self.get_piece(&bf).await != None {
-                        self.interested = true;
                         self.stream.send_message(Message::Interested).await?;
                     }
                 }
@@ -291,7 +302,6 @@ impl Worker {
     // assumes bitfields have been exchanges, but no current piece
     async fn interact(&mut self, mut bf: Bitfield) {
         self.choked = true;
-        self.interested = false;
 
         // find first piece
         if self.get_piece(&bf).await == None && self.disconnect {
@@ -300,8 +310,6 @@ impl Worker {
         if self.current != None {
             if self.stream.send_message(Message::Interested).await == None {
                 return
-            } else {
-                self.interested = true;
             }
         }
         println!("Worker {} connected", self.id);
@@ -325,18 +333,6 @@ impl Worker {
                 },
             }
 
-            if self.get_piece(&bf).await == None {
-                // if no more pieces, send not interested
-                if self.interested {
-                    self.interested = false;
-                    if self.stream.send_message(Message::NotInterested).await == None {
-                        break
-                    }
-                }
-                if self.disconnect {
-                    break
-                }
-            }
             // if not choked, send some requests
             if !self.choked && self.manage_io().await == None {
                 break
