@@ -21,12 +21,17 @@ async fn main() {
                             .short("p")
                             .help("The port you want to listen on (default: 4444)")
                             .value_name("PORT"))
+                    .arg(Arg::with_name("d")
+                            .short("d")
+                            .help("The director you want to download to (default: current directory)")
+                            .value_name("PORT"))
                     .get_matches();
 
     let file = matches.value_of("INPUT").unwrap();
     let port: u16 = matches.value_of("p").unwrap_or("4444").parse().unwrap();
+    let dir = matches.value_of("d").unwrap_or("");
 
-    let mut t = Client::new(file, String::new(), port).await;
+    let mut t = Client::new(file, dir.to_string(), port).await;
 
     let res = t.has().await;
 
