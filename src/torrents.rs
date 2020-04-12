@@ -66,6 +66,7 @@ impl Piece {
 }
 
 pub struct Torrent {
+    pub name: String,
     pub announce: String,
     pub piece_length: u32,
     pub info_hash: Vec<u8>,
@@ -128,7 +129,7 @@ impl Torrent {
             }
         } else {
             // if only one file, create new FileInfo
-            let mut path = vec![t.info.name];
+            let mut path = vec![t.info.name.clone()];
 
             if dir != "" {
                 path.insert(0, dir.clone());
@@ -142,6 +143,7 @@ impl Torrent {
         let length = files.iter().map(|x| x.length).fold(0, |a, b| a + b);
 
         Torrent {
+            name: t.info.name,
             announce: t.announce,
             piece_length: t.info.piece_length,
             info_hash,

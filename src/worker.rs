@@ -318,15 +318,20 @@ impl Worker {
             tokio::select! {
                 op = self.mrx.recv() => {
                     if self.process_op(op).await == None {
+                        println!("BAD1");
                         break
                     }
                 },
                 op = self.brx.recv() => {
                     if self.process_op(op.ok()).await == None {
+                        println!("BAD2");
                         break
                     }
                 },
                 msg = self.stream.read_message() => {
+                    if msg == None {
+                        println!("BAD3");
+                    }
                     if self.process_msg(msg, &mut bf).await == None {
                         break
                     }
@@ -335,6 +340,7 @@ impl Worker {
 
             // if not choked, send some requests
             if !self.choked && self.manage_io().await == None {
+                        println!("BAD4");
                 break
             }
         }
@@ -348,9 +354,8 @@ impl Worker {
     }
 
     // interacts with anyone trying to connect
-    // will never stop
     pub async fn upload(&mut self, mut peer_q: Queue<TcpStream>, mut done: mpsc::Sender<()>) {
-        loop {
+        while !self.stop {
             self.disconnect = false;
             tokio::select! {
                 peer = peer_q.pop_block() => {
@@ -362,11 +367,15 @@ impl Worker {
                         done.send(()).await.ok();
                     }
                 },
-                _ = self.brx.recv() => {
-                    // throw away broadcasts
+                Ok(op) = self.brx.recv() => {
+                    // throw away broadcasts unless stop
+                    if op.op_type == OpType::OpStop {
+                        self.stop = true;
+                    }
                 },
             }
         }
+        println!("Worker {} stopping", self.id);
     }
 
     // attempts to proactively download pieces,
