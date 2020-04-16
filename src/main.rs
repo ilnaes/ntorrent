@@ -1,31 +1,38 @@
 use crate::client::Client;
-use clap::{Arg, App};
+use clap::{App, Arg};
 
-mod opstream;
-mod torrents;
 mod client;
+mod consts;
 mod messages;
+mod opstream;
+mod partial;
 mod peerlist;
+mod torrents;
 mod utils;
 mod worker;
-mod consts;
 
 #[tokio::main]
 async fn main() {
     let matches = App::new("ntorrent")
-                    .arg(Arg::with_name("INPUT")
-                            .required(true)
-                            .help("The .torrent file you want to use")
-                            .index(1))
-                    .arg(Arg::with_name("p")
-                            .short("p")
-                            .help("The port you want to listen on (default: 4444)")
-                            .value_name("PORT"))
-                    .arg(Arg::with_name("d")
-                            .short("d")
-                            .help("The director you want to download to (default: current directory)")
-                            .value_name("PORT"))
-                    .get_matches();
+        .arg(
+            Arg::with_name("INPUT")
+                .required(true)
+                .help("The .torrent file you want to use")
+                .index(1),
+        )
+        .arg(
+            Arg::with_name("p")
+                .short("p")
+                .help("The port you want to listen on (default: 4444)")
+                .value_name("PORT"),
+        )
+        .arg(
+            Arg::with_name("d")
+                .short("d")
+                .help("The director you want to download to (default: current directory)")
+                .value_name("PORT"),
+        )
+        .get_matches();
 
     let file = matches.value_of("INPUT").unwrap();
     let port: u16 = matches.value_of("p").unwrap_or("4444").parse().unwrap();

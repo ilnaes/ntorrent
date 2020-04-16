@@ -1,20 +1,20 @@
+use crate::client;
 use crate::client::Progress;
-use crate::torrents::Piece;
+use crate::consts::*;
 use crate::messages::handshake::Handshake;
 use crate::messages::messages::Message;
 use crate::messages::ops::*;
-use crate::consts::*;
-use crate::utils::bitfield::Bitfield;
-use crate::client;
 use crate::opstream::OpStream;
-use crate::utils::queue::Queue;
+use crate::torrents::Piece;
+use crate::utils::bitfield::Bitfield;
 use crate::utils::calc_request;
+use crate::utils::queue::Queue;
+use std::cmp::min;
 use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex, broadcast};
 use tokio::net::TcpStream;
 use tokio::prelude::*;
+use tokio::sync::{broadcast, mpsc, Mutex};
 use tokio::time::timeout;
-use std::cmp::min;
 
 pub struct Worker {
     id: u64,
@@ -27,9 +27,9 @@ pub struct Worker {
     disconnect: bool,
 
     stream: OpStream,
-    brx: broadcast::Receiver<Op>,  // broadcast receiver from client
-    mrx: mpsc::Receiver<Op>,       // individual receiver from client
-    tx: mpsc::Sender<Op>,          // transmitter back to client
+    brx: broadcast::Receiver<Op>, // broadcast receiver from client
+    mrx: mpsc::Receiver<Op>,      // individual receiver from client
+    tx: mpsc::Sender<Op>,         // transmitter back to client
 
     buf: Vec<u8>,
     current: Option<Piece>,
@@ -40,7 +40,13 @@ pub struct Worker {
 }
 
 impl Worker {
-    pub fn from_client(c: &client::Client, i: u64, brx: broadcast::Receiver<Op>, mrx: mpsc::Receiver<Op>, tx: mpsc::Sender<Op>) -> Worker {
+    pub fn from_client(
+        c: &client::Client,
+        i: u64,
+        brx: broadcast::Receiver<Op>,
+        mrx: mpsc::Receiver<Op>,
+        tx: mpsc::Sender<Op>,
+    ) -> Worker {
         Worker {
             id: i,
             progress: Arc::clone(&c.progress),
@@ -76,15 +82,21 @@ impl Worker {
         let mut buf = [0; 68];
         if self.disconnect {
             // inititor sends first handshake
-            timeout(TIMEOUT, s.write_all(self.handshake.as_slice())).await.ok()?.ok()?;
+            timeout(TIMEOUT, s.write_all(self.handshake.as_slice()))
+                .await
+                .ok()?
+                .ok()?;
         }
         timeout(TIMEOUT, s.read(&mut buf)).await.ok()?.ok()?;
 
         if Handshake::deserialize(buf.as_ref())?.info_hash != self.info_hash {
-            return None
+            return None;
         }
         if !self.disconnect {
-            timeout(TIMEOUT, s.write_all(self.handshake.as_slice())).await.ok()?.ok()?;
+            timeout(TIMEOUT, s.write_all(self.handshake.as_slice()))
+                .await
+                .ok()?
+                .ok()?;
         }
 
         self.stream = OpStream::from(s);
@@ -96,7 +108,7 @@ impl Worker {
             payload = b.bf.clone();
         }
         if self.stream.send_message(Message::Bitfield(payload)).await == None {
-            return None
+            return None;
         }
 
         // get opposing bitfield
@@ -107,10 +119,10 @@ impl Worker {
                 // test length of bitfield
                 let own_bf = self.bf.lock().await;
                 if own_bf.bf.len() != bf.len() {
-                    return None
+                    return None;
                 }
             }
-            Some(Bitfield { bf })
+            Some(Bitfield::from(bf))
         } else {
             None
         }
@@ -120,9 +132,13 @@ impl Worker {
     // handshakes and interacts
     async fn reach_peer(&mut self, ip: String) {
         if let Some(peer) = self.connect(&ip).await {
-            println!("Worker {} attempting to connect to {:?}", self.id, peer.peer_addr().unwrap());
+            println!(
+                "Worker {} attempting to connect to {:?}",
+                self.id,
+                peer.peer_addr().unwrap()
+            );
             if let Some(bf) = self.protocol(peer).await {
-                self.interact(bf).await; 
+                self.interact(bf).await;
             }
         } else {
             // put ip back
@@ -151,11 +167,9 @@ impl Worker {
         let piece = self.current.as_ref()?;
         while self.requested < min(piece.2, self.received + MAXREQUESTS * BLOCKSIZE) {
             let len = calc_request(self.requested, piece.2);
-            self.stream.send_message(Message::Request(
-                                        piece.1,
-                                        self.requested,
-                                        len
-                                    )).await?;
+            self.stream
+                .send_message(Message::Request(piece.1, self.requested, len))
+                .await?;
             self.requested += len;
         }
 
@@ -169,15 +183,15 @@ impl Worker {
 
         if i != piece.1 {
             println!("Not correct piece");
-            return None
+            return None;
         }
         if s as usize + buf.len() > self.buf.len() {
             println!("Too large payload!");
             println!("{} + {} > {}", s, buf.len(), self.buf.len());
-            return None
+            return None;
         }
 
-        self.buf[s as usize..s as usize+buf.len()].copy_from_slice(buf.as_slice());
+        self.buf[s as usize..s as usize + buf.len()].copy_from_slice(buf.as_slice());
         self.received += buf.len() as u32;
 
         if self.received >= piece.2 {
@@ -188,29 +202,35 @@ impl Worker {
             if piece.verify(&self.buf) {
                 // verified piece
 
-                if self.tx.send(Op {
-                    id: self.id,
-                    op_type: OpType::OpPiece(i, self.buf.clone()),
-                }).await.ok() == None {
+                if self
+                    .tx
+                    .send(Op {
+                        id: self.id,
+                        op_type: OpType::OpPiece(i, self.buf.clone()),
+                    })
+                    .await
+                    .ok()
+                    == None
+                {
                     println!("Couldn't send!");
-                    return None
+                    return None;
                 }
 
                 // get new piece
                 if self.get_piece(&bf).await == None {
                     // if no more pieces, send not interested
                     if self.stream.send_message(Message::NotInterested).await == None {
-                        return None
+                        return None;
                     }
                     if self.disconnect {
-                        return None
+                        return None;
                     }
                 }
             } else {
                 // put piece back if doesn't match hash
                 self.work.push(piece).await;
                 println!("Couldn't verify!");
-                return None
+                return None;
             }
         }
 
@@ -222,13 +242,13 @@ impl Worker {
         match msg? {
             Message::Piece(idx, start, payload) => {
                 self.process_piece(idx, start, payload, bf).await?;
-            },
+            }
             Message::Unchoke => {
                 self.choked = false;
-            },
+            }
             Message::Choke => {
                 self.choked = true;
-            },
+            }
             Message::Have(i) => {
                 bf.add(i as usize);
 
@@ -238,25 +258,27 @@ impl Worker {
                         self.stream.send_message(Message::Interested).await?;
                     }
                 }
-            },
+            }
             Message::Interested => {
                 self.stream.send_message(Message::Unchoke).await?;
                 self.disconnect = false
-            },
+            }
             Message::NotInterested => {
                 if self.current == None {
-                    return None
+                    return None;
                 }
                 self.disconnect = true
-            },
+            }
             Message::Request(i, s, len) => {
-                self.tx.send(Op {
-                    id: self.id,
-                    op_type: OpType::OpRequest(i, s, len),
-                }).await.ok()?;
-            },
-            _ => {
-            },
+                self.tx
+                    .send(Op {
+                        id: self.id,
+                        op_type: OpType::OpRequest(i, s, len),
+                    })
+                    .await
+                    .ok()?;
+            }
+            _ => {}
         }
 
         Some(())
@@ -269,14 +291,14 @@ impl Worker {
 
         if op.id != 0 {
             // not receiver id
-            return None
+            return None;
         }
 
         match op.op_type {
             OpType::OpMessage(msg) => {
                 // send message and update length sent
                 let mut n = 0;
-                if let Message::Piece(_,_,v) = &msg {
+                if let Message::Piece(_, _, v) = &msg {
                     n += v.len();
                 }
                 self.stream.send_message(msg).await?;
@@ -286,15 +308,13 @@ impl Worker {
                     prog.uploaded += n;
                 }
                 Some(())
-            },
-            OpType::OpDisconnect => {
-                None
             }
+            OpType::OpDisconnect => None,
             OpType::OpStop => {
                 self.stop = true;
                 None
             }
-            _ => None
+            _ => None,
         }
     }
 
@@ -305,11 +325,11 @@ impl Worker {
 
         // find first piece
         if self.get_piece(&bf).await == None && self.disconnect {
-            return
+            return;
         }
         if self.current != None {
             if self.stream.send_message(Message::Interested).await == None {
-                return
+                return;
             }
         }
         println!("Worker {} connected", self.id);
@@ -340,8 +360,8 @@ impl Worker {
 
             // if not choked, send some requests
             if !self.choked && self.manage_io().await == None {
-                        println!("BAD4");
-                break
+                println!("BAD4");
+                break;
             }
         }
 

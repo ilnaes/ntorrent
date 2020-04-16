@@ -1,18 +1,18 @@
-use crate::messages::messages::Message;
 use crate::messages::handshake::Handshake;
+use crate::messages::messages::Message;
 use crate::messages::ops::*;
-use crate::torrents::Torrent;
 use crate::peerlist::Peerlist;
+use crate::torrents::Torrent;
+use crate::utils::bitfield::Bitfield;
 use crate::utils::queue::Queue;
 use crate::worker::Worker;
-use crate::utils::bitfield::Bitfield;
-use tokio::sync::{Mutex, mpsc, broadcast};
-use tokio::net::{TcpStream, TcpListener};
-use std::sync::Arc;
+use ctrlc;
 use std::fs::File;
 use std::io::prelude::*;
 use std::path::Path;
-use ctrlc;
+use std::sync::Arc;
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::{broadcast, mpsc, Mutex};
 
 pub struct Progress {
     pub uploaded: usize,
@@ -23,7 +23,6 @@ pub struct Progress {
 pub struct Client {
     ndownloaders: u64,
     nlisteners: u64,
-    dir: String,
     pub torrent: Torrent,
     pub handshake: Vec<u8>,
     pub peer_list: Queue<String>,
@@ -34,7 +33,12 @@ pub struct Client {
     buf: Vec<u8>,
 }
 
-async fn listen(port: u16, mut peer_q: Queue<TcpStream>, mut done_q: mpsc::Receiver<()>, mut erx: broadcast::Receiver<()>) {
+async fn listen(
+    port: u16,
+    mut peer_q: Queue<TcpStream>,
+    mut done_q: mpsc::Receiver<()>,
+    mut erx: broadcast::Receiver<()>,
+) {
     let mut listener = match TcpListener::bind(format!("127.0.0.1:{}", port)).await {
         Ok(l) => l,
         Err(e) => panic!("Can't bind to port: {}", e),
@@ -70,7 +74,6 @@ impl Client {
 
         Client {
             port,
-            dir,
             ndownloaders: 10,
             nlisteners: 10,
             torrent,
@@ -81,9 +84,7 @@ impl Client {
                 left: len,
             })),
             handshake,
-            bf: Arc::new(Mutex::new(Bitfield {
-                bf: vec![0; bf_len],
-            })),
+            bf: Arc::new(Mutex::new(Bitfield::new(bf_len))),
             btx: Arc::new(Mutex::new(btx)),
             buf: vec![0; len],
         }
@@ -108,7 +109,7 @@ impl Client {
                 let file = std::fs::read(path);
                 if let Ok(v) = file {
                     if v.len() == f.length {
-                        buf[i..i+f.length as usize].copy_from_slice(v.as_slice());
+                        buf[i..i + f.length as usize].copy_from_slice(v.as_slice());
                     } else {
                         all = false;
                     }
@@ -134,13 +135,16 @@ impl Client {
                     let len = self.torrent.piece_length as usize;
 
                     while let Some(piece) = iter.next() {
-                        let ceil = std::cmp::min(i as usize+len, self.torrent.length);
+                        let ceil = std::cmp::min(i as usize + len, self.torrent.length);
                         if !piece.verify(&buf[i as usize..ceil]) {
                             all = false;
-                            break
+                            break;
                         } else {
-                            if (i/(len as u64)) % 100 == 99 {
-                                println!("Verified {:.2}%", 100f64 * (i+len as u64) as f64/self.torrent.length as f64);
+                            if (i / (len as u64)) % 100 == 99 {
+                                println!(
+                                    "Verified {:.2}%",
+                                    100f64 * (i + len as u64) as f64 / self.torrent.length as f64
+                                );
                             }
                         }
                         i += len as u64;
@@ -163,9 +167,14 @@ impl Client {
         }
     }
 
-
     // spawns downloaders and listeners
-    async fn manage_workers(&mut self, mtx: mpsc::Sender<Op>, peer_q: Queue<TcpStream>, mut done_q: mpsc::Sender<()>, download: bool) -> Vec<mpsc::Sender<Op>> {
+    async fn manage_workers(
+        &mut self,
+        mtx: mpsc::Sender<Op>,
+        peer_q: Queue<TcpStream>,
+        mut done_q: mpsc::Sender<()>,
+        download: bool,
+    ) -> Vec<mpsc::Sender<Op>> {
         let mut vec_mtx = Vec::new();
         let mut i = 0;
 
@@ -179,7 +188,7 @@ impl Client {
                 }
                 let (mtx1, mrx1) = mpsc::channel::<Op>(self.torrent.length);
                 vec_mtx.push(mtx1);
-                let mut w = Worker::from_client(&self, i+1, rx, mrx1, mtx.clone());
+                let mut w = Worker::from_client(&self, i + 1, rx, mrx1, mtx.clone());
                 tokio::spawn(async move {
                     w.download().await;
                 });
@@ -199,7 +208,7 @@ impl Client {
             let pq = peer_q.clone();
             let dq = done_q.clone();
 
-            let mut w = Worker::from_client(&self, i+1, rx, mrx1, mtx.clone());
+            let mut w = Worker::from_client(&self, i + 1, rx, mrx1, mtx.clone());
             tokio::spawn(async move {
                 w.upload(pq, dq).await;
             });
@@ -211,27 +220,20 @@ impl Client {
     }
 
     // receives pieces and signals have messages
-    async fn receive(&mut self, mut mtx: Vec<mpsc::Sender<Op>>, mut mrx: mpsc::Receiver<Op>, mut erx: broadcast::Receiver<()>) {
+    async fn receive(
+        &mut self,
+        mut mtx: Vec<mpsc::Sender<Op>>,
+        mut mrx: mpsc::Receiver<Op>,
+        mut erx: broadcast::Receiver<()>,
+    ) {
         let n = self.torrent.pieces.len().await;
         let mut received: usize = 0;
         let mut served = 0;
 
-        let path = if self.dir.len() > 0 {
-            format!("{}/{}.part", self.dir, self.torrent.name)
-        } else {
-            format!("{}.part", self.torrent.name)
-        };
-        let mut partial =
-            if let Ok(f) = File::create(path) {
-                Some(f)
-            } else {
-                return
-            };
-
         loop {
             tokio::select! {
                 Ok(()) = erx.recv() => {
-                    // broadcast HAVE to all workers
+                    // broadcast STOP to all workers
                     let btx = self.btx.lock().await;
                     btx.send(Op {
                         id: 0,
@@ -291,16 +293,8 @@ impl Client {
                                 }).ok();
                             }
 
-                            if let Some(mut f) = partial.as_ref() {
-                                if let Err(_) = f.write_all(res.as_slice()) {
-                                    panic!("Can't write");
-                                }
-                            } else {
-                                panic!("Can't write")
-                            }
-
                             received += 1;
-                            
+
                             println!("Got piece {} from Worker {} --- {:.2}%", idx, op.id, 100f32 * (received as f32)/(n as f32));
                             if received == n {
                                 self.write_file(self.buf.as_slice());
@@ -309,7 +303,6 @@ impl Client {
                                     id: 0,
                                     op_type: OpType::OpStop,
                                 }).ok();
-                                partial = None;
                             }
                         },
                         _ => (),
@@ -333,10 +326,11 @@ impl Client {
             let prefix = path.parent().unwrap();
             std::fs::create_dir_all(prefix).expect("Could not create directories");
 
-            let mut file = File::create(&path)
-                        .expect(&format!("Could not create {}", path.to_str().unwrap()));
+            let mut file =
+                File::create(&path).expect(&format!("Could not create {}", path.to_str().unwrap()));
 
-            file.write(&buf[i..i+f.length]).expect("Could not write to file");
+            file.write(&buf[i..i + f.length])
+                .expect("Could not write to file");
             i += f.length;
         }
         println!("FINISHED");
@@ -358,7 +352,9 @@ impl Client {
         let tx1 = tx.clone();
 
         // vector of channels for workers <- client
-        let vec_mtx = self.manage_workers(mtx, peer_q.clone(), done_tx, download).await;
+        let vec_mtx = self
+            .manage_workers(mtx, peer_q.clone(), done_tx, download)
+            .await;
 
         let port = self.port;
 
@@ -366,7 +362,8 @@ impl Client {
             if let Err(_) = tx1.send(()) {
                 std::process::exit(1)
             }
-        }).expect("Could not register SIGINT handler");
+        })
+        .expect("Could not register SIGINT handler");
 
         tokio::join!(
             peerlist.poll_peerlist(tx.subscribe()),

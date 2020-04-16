@@ -33,6 +33,10 @@ impl Bitfield {
     pub fn from(bf: Vec<u8>) -> Bitfield {
         Bitfield { bf }
     }
+
+    pub fn new(i: usize) -> Bitfield {
+        Bitfield { bf: vec![0; i] }
+    }
 }
 
 #[cfg(test)]

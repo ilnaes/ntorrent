@@ -11,7 +11,7 @@ pub struct Queue<T> {
 
 impl<T> Queue<T> {
     pub async fn push(&mut self, x: T) {
-        let mut q = self.q.lock().await;    
+        let mut q = self.q.lock().await;
         q.push_back(x);
         self.cond.notify();
     }
@@ -28,7 +28,8 @@ impl<T> Queue<T> {
     // find first item that satisfies the f filter
     // does not block
     pub async fn find_first<F>(&mut self, f: F) -> Option<T>
-        where F: Fn(&T) -> bool
+    where
+        F: Fn(&T) -> bool,
     {
         let mut q = self.q.lock().await;
         let n = q.len();
@@ -36,7 +37,7 @@ impl<T> Queue<T> {
             let item = q.pop_front().unwrap();
             if f(&item) {
                 self.cond.notify();
-                return Some(item)
+                return Some(item);
             } else {
                 q.push_back(item);
             }
@@ -51,7 +52,7 @@ impl<T> Queue<T> {
             let mut q = self.q.lock().await;
             let ret = q.pop_front();
             if let Some(res) = ret {
-                return res
+                return res;
             }
 
             // unlock and sleep
@@ -73,7 +74,7 @@ impl<T> Queue<T> {
     //     self.cond.notify();
     //     q.pop_front()
     // }
-    
+
     pub async fn replace(&mut self, q: VecDeque<T>) {
         let mut val = self.q.lock().await;
         *val = q;
@@ -110,18 +111,18 @@ mod test {
 
     // #[tokio::test]
     // async fn test_push_pop() {
-        // let mut q = Queue::new();
-        // assert_eq!(q.pop().await, None);
+    // let mut q = Queue::new();
+    // assert_eq!(q.pop().await, None);
 
-        // q.push(1).await;
-        // assert_eq!(q.pop().await, Some(1));
-        // assert_eq!(q.pop().await, None);
+    // q.push(1).await;
+    // assert_eq!(q.pop().await, Some(1));
+    // assert_eq!(q.pop().await, None);
     // }
 
     #[tokio::test]
     async fn test_replace() {
         let mut q = Queue::new();
-        q.replace(vec![3,2,1].into_iter().collect()).await;
+        q.replace(vec![3, 2, 1].into_iter().collect()).await;
 
         assert_eq!(q.pop_block().await, 3);
         assert_eq!(q.pop_block().await, 2);
@@ -130,18 +131,24 @@ mod test {
     #[tokio::test]
     async fn test_block() {
         let mut q = Queue::<i64>::new();
-        let res = timeout(Duration::from_millis(100), q.pop_block()).await.ok();
+        let res = timeout(Duration::from_millis(100), q.pop_block())
+            .await
+            .ok();
         assert_eq!(res, None);
 
         q.push(1).await;
-        let res = timeout(Duration::from_millis(100), q.pop_block()).await.ok();
+        let res = timeout(Duration::from_millis(100), q.pop_block())
+            .await
+            .ok();
         assert_eq!(res, Some(1));
 
         let mut q1 = q.clone();
         tokio::spawn(async move {
             timeout(Duration::from_millis(50), q1.push(2)).await.ok();
         });
-        let res = timeout(Duration::from_millis(100), q.pop_block()).await.ok();
+        let res = timeout(Duration::from_millis(100), q.pop_block())
+            .await
+            .ok();
         assert_eq!(res, Some(2));
     }
 }

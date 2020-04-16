@@ -1,15 +1,15 @@
-use crate::client::Progress;
-use crate::utils::serialize_bytes;
 use crate::client::Client;
+use crate::client::Progress;
 use crate::utils::queue::Queue;
-use tokio::sync::{Mutex, broadcast};
-use std::sync::Arc;
+use crate::utils::serialize_bytes;
 use byteorder::{BigEndian, ReadBytesExt};
-use std::io::Cursor;
-use std::time::Duration;
-use std::collections::VecDeque;
 use serde::{Deserialize, Serialize};
 use serde_bytes::ByteBuf;
+use std::collections::VecDeque;
+use std::io::Cursor;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::{broadcast, Mutex};
 
 #[derive(Serialize, Deserialize, Debug)]
 struct TrackerResponse {
@@ -82,18 +82,21 @@ impl Peerlist {
 
     async fn get_peerlist(&mut self) {
         // manually encode bytes
-        let url = format!("{}?info_hash={}&peer_id={}",
-                          self.announce,
-                          serialize_bytes(&self.info_hash),
-                          serialize_bytes(&self.peer_id));
-        let mut params = vec![("port", self.port as u64),
-                        ("compact", 1)];
+        let url = format!(
+            "{}?info_hash={}&peer_id={}",
+            self.announce,
+            serialize_bytes(&self.info_hash),
+            serialize_bytes(&self.peer_id)
+        );
+        let mut params = vec![("port", self.port as u64), ("compact", 1)];
 
         {
             let p = self.progress.lock().await;
-            params.extend(vec![("uploaded", p.uploaded as u64),
-                            ("downloaded", p.downloaded as u64),
-                            ("left", p.left as u64)]);
+            params.extend(vec![
+                ("uploaded", p.uploaded as u64),
+                ("downloaded", p.downloaded as u64),
+                ("left", p.left as u64),
+            ]);
         }
 
         let client = reqwest::Client::new();
@@ -107,10 +110,12 @@ impl Peerlist {
             .await
             .expect("Could not parse tracker response!");
 
-        let res: TrackerResponse = serde_bencode::de::from_bytes(&res)
-                                         .expect("Could not parse tracker response!");
+        let res: TrackerResponse =
+            serde_bencode::de::from_bytes(&res).expect("Could not parse tracker response!");
 
-        self.list.replace(parse_peerlist(res.peers.as_slice())).await;
+        self.list
+            .replace(parse_peerlist(res.peers.as_slice()))
+            .await;
         // hack for own tracker
         // self.list.push(format!("localhost:{}", 4444).to_string()).await;
         self.interval = res.interval;

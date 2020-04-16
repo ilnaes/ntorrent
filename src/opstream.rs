@@ -1,10 +1,10 @@
-use crate::messages::messages::Message;
 use crate::consts;
+use crate::messages::messages::Message;
+use bytes::Bytes;
+use futures::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
-use futures::{StreamExt, SinkExt};
-use bytes::Bytes;
 
 pub struct OpStream {
     stream: Option<Framed<TcpStream, LengthDelimitedCodec>>,
@@ -16,7 +16,9 @@ impl OpStream {
     }
 
     pub fn from(s: TcpStream) -> OpStream {
-        OpStream { stream: Some(Framed::new(s, LengthDelimitedCodec::new())) }
+        OpStream {
+            stream: Some(Framed::new(s, LengthDelimitedCodec::new())),
+        }
     }
 
     pub fn close(&mut self) {
@@ -38,8 +40,11 @@ impl OpStream {
     pub async fn send_message(&mut self, m: Message) -> Option<()> {
         let msg = m.serialize();
         if let Some(s) = &mut self.stream {
-            timeout(consts::TIMEOUT, s.send(Bytes::from(msg))).await.ok()?.ok()?;
-            return Some(())
+            timeout(consts::TIMEOUT, s.send(Bytes::from(msg)))
+                .await
+                .ok()?
+                .ok()?;
+            return Some(());
         }
         None
     }
