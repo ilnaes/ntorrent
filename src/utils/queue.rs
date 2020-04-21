@@ -52,6 +52,7 @@ impl<T> Queue<T> {
             let mut q = self.q.lock().await;
             let ret = q.pop_front();
             if let Some(res) = ret {
+                self.cond.notify();
                 return res;
             }
 
@@ -107,6 +108,7 @@ impl<T> Queue<T> {
 mod test {
     use super::Queue;
     use std::time::Duration;
+    use tokio::sync::mpsc;
     use tokio::time::timeout;
 
     // #[tokio::test]
@@ -144,11 +146,40 @@ mod test {
 
         let mut q1 = q.clone();
         tokio::spawn(async move {
-            timeout(Duration::from_millis(50), q1.push(2)).await.ok();
+            tokio::time::delay_for(Duration::from_millis(20)).await;
+            q1.push(2).await;
+            q1.push(3).await;
+        });
+
+        let mut q2 = q.clone();
+        let (mut tx, mut rx) = mpsc::channel(1);
+        tokio::spawn(async move {
+            let res = timeout(Duration::from_millis(100), q2.pop_block())
+                .await
+                .ok();
+            if let Err(_) = tx.send(res).await {
+                assert!(false);
+            };
         });
         let res = timeout(Duration::from_millis(100), q.pop_block())
             .await
             .ok();
-        assert_eq!(res, Some(2));
+        let res1 = timeout(Duration::from_millis(100), rx.recv()).await;
+
+        if let Ok(r) = res1 {
+            if let Some(n) = r {
+                match (n, res) {
+                    (Some(2), Some(3)) => {}
+                    (Some(3), Some(2)) => {}
+                    _ => {
+                        assert!(false);
+                    }
+                }
+            } else {
+                assert!(false);
+            }
+        } else {
+            assert!(false);
+        }
     }
 }
