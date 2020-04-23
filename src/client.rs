@@ -1,6 +1,7 @@
 use crate::messages::handshake::Handshake;
 use crate::messages::messages::Message;
 use crate::messages::ops::*;
+use crate::partial::Partial;
 use crate::peerlist::Peerlist;
 use crate::torrents::Torrent;
 use crate::utils::bitfield::Bitfield;
@@ -30,6 +31,7 @@ pub struct Client {
     pub port: u16,
     pub bf: Arc<Mutex<Bitfield>>,
     pub btx: Arc<Mutex<broadcast::Sender<Op>>>,
+    pub partial: Partial,
     buf: Vec<u8>,
 }
 
@@ -39,7 +41,7 @@ async fn listen(
     mut done_q: mpsc::Receiver<()>,
     mut erx: broadcast::Receiver<()>,
 ) {
-    let mut listener = match TcpListener::bind(format!("127.0.0.1:{}", port)).await {
+    let mut listener = match TcpListener::bind(format!("0.0.0.0:{}", port)).await {
         Ok(l) => l,
         Err(e) => panic!("Can't bind to port: {}", e),
     };
@@ -67,6 +69,8 @@ impl Client {
         }
         let handshake = Handshake::from(&torrent).serialize();
 
+        let partial = Partial::from(&torrent);
+
         let bf_len = (torrent.length - 1) / (8 * torrent.piece_length as usize) + 1;
         let len = torrent.length;
         let n = torrent.pieces.len().await;
@@ -74,6 +78,7 @@ impl Client {
 
         Client {
             port,
+            partial,
             ndownloaders: 10,
             nlisteners: 10,
             torrent,

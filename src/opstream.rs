@@ -31,7 +31,7 @@ impl OpStream {
             if buf.len() == 0 {
                 return Some(Message::KeepAlive);
             }
-            Message::deserialize(buf.to_vec())
+            Message::deserialize(buf.as_ref())
         } else {
             None
         }

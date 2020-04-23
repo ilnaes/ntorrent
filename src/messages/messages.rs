@@ -17,7 +17,7 @@ pub enum Message {
 }
 
 impl Message {
-    pub fn deserialize(buf: Vec<u8>) -> Option<Message> {
+    pub fn deserialize(buf: &[u8]) -> Option<Message> {
         let mut cx = Cursor::new(buf);
         match cx.read_u8().ok()? {
             0 => Some(Message::Choke),
