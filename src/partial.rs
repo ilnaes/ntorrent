@@ -7,6 +7,12 @@ use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+pub struct Progress {
+    pub uploaded: usize,
+    pub downloaded: usize,
+    pub left: usize,
+}
+
 pub struct Partial<'a> {
     file: Option<File>,
     // filename: String,
@@ -14,6 +20,7 @@ pub struct Partial<'a> {
     received: usize,
     torrent: &'a Torrent,
     num_pieces: usize,
+    pub progress: Arc<Mutex<Progress>>,
     pub bf: Arc<Mutex<Bitfield>>,
 }
 
@@ -51,6 +58,11 @@ impl<'a> Partial<'a> {
             buf,
             num_pieces: bf_len,
             received: 0,
+            progress: Arc::new(Mutex::new(Progress {
+                downloaded: 0,
+                uploaded: 0,
+                left: torrent.length,
+            })),
             bf: Arc::new(Mutex::new(bf)),
         }
     }
@@ -78,12 +90,13 @@ impl<'a> Partial<'a> {
     }
 
     // updates bitfield and writes piece to file
-    // returns true if didn't have piece
-    pub async fn update(&mut self, idx: u32, res: Vec<u8>) -> bool {
+    // returns None if already has piece
+    // returns Some(true) if finished
+    pub async fn update(&mut self, idx: u32, res: Vec<u8>) -> Option<bool> {
         let mut bf = self.bf.lock().await;
         // check if already has piece
         if bf.has(idx as usize) {
-            return false;
+            return None;
         }
 
         // write to buffer
@@ -94,6 +107,10 @@ impl<'a> Partial<'a> {
         // mark bit
         bf.add(idx as usize);
 
+        let mut prog = self.progress.lock().await;
+        prog.downloaded += res.len();
+        prog.left -= res.len();
+
         // write to partial file
         if let Some(f) = self.file.as_mut() {
             // TODO: maybe error check this
@@ -103,11 +120,13 @@ impl<'a> Partial<'a> {
 
         if self.received == self.num_pieces {
             self.write_file();
+            Some(true)
+        } else {
+            Some(false)
         }
-
-        return true;
     }
 
+    // returns byte piece if present
     pub async fn get(&self, idx: u32, offset: u32, len: u32) -> Option<Vec<u8>> {
         let bf = self.bf.lock().await;
         if !bf.has(idx as usize) {

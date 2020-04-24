@@ -1,5 +1,5 @@
 use crate::client::Client;
-use crate::client::Progress;
+use crate::partial::Progress;
 use crate::utils::queue::Queue;
 use crate::utils::serialize_bytes;
 use byteorder::{BigEndian, ReadBytesExt};
@@ -54,7 +54,7 @@ impl Peerlist {
     pub fn from(c: &Client) -> Peerlist {
         Peerlist {
             list: c.peer_list.clone(),
-            progress: Arc::clone(&c.progress),
+            progress: Arc::clone(&c.partial.progress),
             interval: 0,
             port: c.port,
             info_hash: c.torrent.info_hash.clone(),

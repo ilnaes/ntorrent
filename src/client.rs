@@ -8,18 +8,10 @@ use crate::utils::bitfield::Bitfield;
 use crate::utils::queue::Queue;
 use crate::worker::Worker;
 use ctrlc;
-use std::fs::File;
-use std::io::prelude::*;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, Mutex};
-
-pub struct Progress {
-    pub uploaded: usize,
-    pub downloaded: usize,
-    pub left: usize,
-}
 
 pub struct Client<'a> {
     ndownloaders: u64,
@@ -27,7 +19,6 @@ pub struct Client<'a> {
     pub torrent: &'a Torrent,
     pub handshake: Vec<u8>,
     pub peer_list: Queue<String>,
-    pub progress: Arc<Mutex<Progress>>,
     pub port: u16,
     pub bf: Arc<Mutex<Bitfield>>,
     pub btx: Arc<Mutex<broadcast::Sender<Op>>>,
@@ -83,11 +74,6 @@ impl<'a> Client<'a> {
             nlisteners: 10,
             torrent,
             peer_list: Queue::new(),
-            progress: Arc::new(Mutex::new(Progress {
-                uploaded: 0,
-                downloaded: 0,
-                left: len,
-            })),
             handshake,
             bf: Arc::new(Mutex::new(Bitfield::new(bf_len))),
             btx: Arc::new(Mutex::new(btx)),
@@ -159,8 +145,8 @@ impl<'a> Client<'a> {
 
                 if all {
                     self.buf = buf;
-                    let mut p = self.progress.lock().await;
-                    p.left = 0;
+                    // let mut p = self.progress.lock().await;
+                    // p.left = 0;
 
                     let mut bf = self.bf.lock().await;
                     let len = bf.len();
@@ -251,68 +237,73 @@ impl<'a> Client<'a> {
                 Some(op) = mrx.recv() => {
                     match op.op_type {
                         OpType::OpRequest(i, s, len) => {
-                            {
-                                let bf = self.bf.lock().await;
-                                if !bf.has(i as usize) {
-                                    mtx[i as usize-1].send(Op {
-                                        id: 0,
-                                        op_type: OpType::OpDisconnect,
-                                    }).await.ok();
-                                    continue
-                                }
+                            if let Some(b) = self.partial.get(i, s, len).await {
+                                // let start = i as usize * self.torrent.piece_length as usize;
+                                mtx[op.id as usize-1].send(Op {
+                                    id: 0,
+                                    op_type: OpType::OpMessage(Message::Piece(i, s, b)),
+                                }).await.ok();
+                                served += len as usize;
+                                println!("Serving piece {} to Worker {} --- {:.2} KB uploaded", i, op.id, served as f64/1024f64);
+                            } else {
+                                // let bf = self.bf.lock().await;
+                                // if !bf.has(i as usize) {
+                                mtx[i as usize-1].send(Op {
+                                    id: 0,
+                                    op_type: OpType::OpDisconnect,
+                                }).await.ok();
+                                // continue
+                                // }
                             }
 
                             // send piece
-                            let start = i as usize * self.torrent.piece_length as usize;
-                            mtx[op.id as usize-1].send(Op {
-                                id: 0,
-                                op_type: OpType::OpMessage(Message::Piece(
-                                    i, s, self.buf[start+s as usize..start+s as usize+len as usize].to_vec(),
-                                )),
-                            }).await.ok();
-                            served += len as usize;
-                            println!("Serving piece {} to Worker {} --- {:.2} KB uploaded", i, op.id, served as f64/1024f64);
                         },
                         OpType::OpPiece(idx, res) => {
-                            let start = idx as usize * self.torrent.piece_length as usize;
-                            self.buf[start..start + res.len()].copy_from_slice(res.as_slice());
-                            {
-                                // check if already has piece
-                                let mut bf = self.bf.lock().await;
-                                if bf.has(idx as usize) {
-                                    continue
-                                }
-                                bf.add(idx as usize);
-                            }
-                            if !self.partial.update(idx, res.clone()).await {
-                                continue
-                            }
-                            {
-                                // update progress
-                                let mut prog = self.progress.lock().await;
-                                prog.downloaded += res.len();
-                                prog.left -= res.len();
-                            }
-                            {
+                            // let start = idx as usize * self.torrent.piece_length as usize;
+                            // self.buf[start..start + res.len()].copy_from_slice(res.as_slice());
+                            // {
+                            //     // check if already has piece
+                            //     let mut bf = self.bf.lock().await;
+                            //     if bf.has(idx as usize) {
+                            //         continue
+                            //     }
+                            //     bf.add(idx as usize);
+                            // }
+                            // {
+                            //     // update progress
+                            //     let mut prog = self.progress.lock().await;
+                            //     prog.downloaded += res.len();
+                            //     prog.left -= res.len();
+                            // }
+
+                            if let Some(finished) = self.partial.update(idx, res.clone()).await {
                                 // broadcast HAVE to all workers
                                 let btx = self.btx.lock().await;
                                 btx.send(Op {
                                     id: 0,
                                     op_type: OpType::OpMessage(Message::Have(idx))
                                 }).ok();
-                            }
 
-                            received += 1;
+                                if finished {
+                                    let btx = self.btx.lock().await;
+                                    btx.send(Op {
+                                        id: 0,
+                                        op_type: OpType::OpStop,
+                                    }).ok();
+                                }
+                            }
 
                             println!("Got piece {} from Worker {} --- {:.2}%", idx, op.id, 100f32 * (received as f32)/(n as f32));
-                            if received == n {
-                                self.write_file(self.buf.as_slice());
-                                let btx = self.btx.lock().await;
-                                btx.send(Op {
-                                    id: 0,
-                                    op_type: OpType::OpStop,
-                                }).ok();
-                            }
+                            received += 1;
+
+                            // if received == n {
+                            //     self.write_file(self.buf.as_slice());
+                            //     let btx = self.btx.lock().await;
+                            //     btx.send(Op {
+                            //         id: 0,
+                            //         op_type: OpType::OpStop,
+                            //     }).ok();
+                            // }
                         },
                         _ => (),
                     }
@@ -323,27 +314,27 @@ impl<'a> Client<'a> {
         println!("Receiver stopping");
     }
 
-    fn write_file(&self, buf: &[u8]) {
-        let mut i = 0;
+    // fn write_file(&self, buf: &[u8]) {
+    //     let mut i = 0;
 
-        for f in self.torrent.files.iter() {
-            let path = &f.path.join("/");
-            println!("Writing to {}", path);
-            let path = Path::new(&path);
+    //     for f in self.torrent.files.iter() {
+    //         let path = &f.path.join("/");
+    //         println!("Writing to {}", path);
+    //         let path = Path::new(&path);
 
-            // create directories if necessary
-            let prefix = path.parent().unwrap();
-            std::fs::create_dir_all(prefix).expect("Could not create directories");
+    //         // create directories if necessary
+    //         let prefix = path.parent().unwrap();
+    //         std::fs::create_dir_all(prefix).expect("Could not create directories");
 
-            let mut file =
-                File::create(&path).expect(&format!("Could not create {}", path.to_str().unwrap()));
+    //         let mut file =
+    //             File::create(&path).expect(&format!("Could not create {}", path.to_str().unwrap()));
 
-            file.write(&buf[i..i + f.length])
-                .expect("Could not write to file");
-            i += f.length;
-        }
-        println!("FINISHED");
-    }
+    //         file.write(&buf[i..i + f.length])
+    //             .expect("Could not write to file");
+    //         i += f.length;
+    //     }
+    //     println!("FINISHED");
+    // }
 
     pub async fn serve(&mut self, download: bool) {
         let mut peerlist = Peerlist::from(&self);

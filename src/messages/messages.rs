@@ -11,7 +11,7 @@ pub enum Message {
     Bitfield(Vec<u8>),
     Request(u32, u32, u32),
     Have(u32),
-    Piece(u32, u32, Vec<u8>),
+    Piece(u32, u32, Vec<u8>), // index * offset * block
     Cancel(u32, u32, u32),
     Port(u16),
 }

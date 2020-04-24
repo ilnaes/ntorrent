@@ -1,10 +1,10 @@
 use crate::client;
-use crate::client::Progress;
 use crate::consts::*;
 use crate::messages::handshake::Handshake;
 use crate::messages::messages::Message;
 use crate::messages::ops::*;
 use crate::opstream::OpStream;
+use crate::partial::Progress;
 use crate::torrents::Piece;
 use crate::utils::bitfield::Bitfield;
 use crate::utils::calc_request;
@@ -49,7 +49,7 @@ impl Worker {
     ) -> Worker {
         Worker {
             id: i,
-            progress: Arc::clone(&c.progress),
+            progress: Arc::clone(&c.partial.progress),
             peers: c.peer_list.clone(),
             work: c.torrent.pieces.clone(),
             handshake: c.handshake.clone(),
