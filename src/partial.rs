@@ -67,26 +67,79 @@ impl<'a> Partial<'a> {
         }
     }
 
-    fn write_file(&self) {
+    // returns None if no files exist
+    // Some(true) if all files exist and are verified
+    // Some(false) otherwise
+    pub async fn has(&mut self) -> Option<bool> {
+        let mut all = true;
+        let mut exists = false;
         let mut i = 0;
+        let mut buf = vec![0; self.torrent.length];
 
         for f in self.torrent.files.iter() {
-            let path = &f.path.join("/");
-            println!("Writing to {}", path);
-            let path = Path::new(&path);
+            let path = f.path.join("/");
+            let path = Path::new(path.as_str());
 
-            // create directories if necessary
-            let prefix = path.parent().unwrap();
-            std::fs::create_dir_all(prefix).expect("Could not create directories");
-
-            let mut file =
-                File::create(&path).expect(&format!("Could not create {}", path.to_str().unwrap()));
-
-            file.write(&self.buf[i..i + f.length])
-                .expect("Could not write to file");
+            // see if path exist
+            if path.exists() {
+                exists = true;
+                let file = std::fs::read(path);
+                if let Ok(v) = file {
+                    if v.len() == f.length {
+                        buf[i..i + f.length as usize].copy_from_slice(v.as_slice());
+                    } else {
+                        all = false;
+                    }
+                } else {
+                    all = false;
+                }
+            } else {
+                all = false;
+            }
             i += f.length;
         }
-        println!("FINISHED");
+
+        if !exists {
+            None
+        } else {
+            if all {
+                // verify all pieces
+                {
+                    let q = self.torrent.pieces.get_q();
+                    let q = q.lock().await;
+                    let mut iter = q.iter();
+                    let mut i: u64 = 0;
+                    let len = self.torrent.piece_length as usize;
+
+                    while let Some(piece) = iter.next() {
+                        let ceil = std::cmp::min(i as usize + len, self.torrent.length);
+                        if !piece.verify(&buf[i as usize..ceil]) {
+                            all = false;
+                            break;
+                        } else {
+                            if (i / (len as u64)) % 100 == 99 {
+                                println!(
+                                    "Verified {:.2}%",
+                                    100f64 * (i + len as u64) as f64 / self.torrent.length as f64
+                                );
+                            }
+                        }
+                        i += len as u64;
+                    }
+                }
+
+                self.buf = buf;
+                let mut p = self.progress.lock().await;
+                p.left = 0;
+
+                let mut bf = self.bf.lock().await;
+                let len = bf.len();
+                *bf = Bitfield::from(vec![255; len]);
+
+                self.torrent.pieces.clear().await;
+            }
+            Some(all)
+        }
     }
 
     // updates bitfield and writes piece to file
@@ -137,5 +190,27 @@ impl<'a> Partial<'a> {
         return Some(
             self.buf[start + offset as usize..start + offset as usize + len as usize].to_vec(),
         );
+    }
+
+    fn write_file(&self) {
+        let mut i = 0;
+
+        for f in self.torrent.files.iter() {
+            let path = &f.path.join("/");
+            println!("Writing to {}", path);
+            let path = Path::new(&path);
+
+            // create directories if necessary
+            let prefix = path.parent().unwrap();
+            std::fs::create_dir_all(prefix).expect("Could not create directories");
+
+            let mut file =
+                File::create(&path).expect(&format!("Could not create {}", path.to_str().unwrap()));
+
+            file.write(&self.buf[i..i + f.length])
+                .expect("Could not write to file");
+            i += f.length;
+        }
+        println!("FINISHED");
     }
 }

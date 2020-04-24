@@ -10,7 +10,7 @@ pub struct Queue<T> {
 }
 
 impl<T> Queue<T> {
-    pub async fn push(&mut self, x: T) {
+    pub async fn push(&self, x: T) {
         let mut q = self.q.lock().await;
         q.push_back(x);
         self.cond.notify();
@@ -27,7 +27,7 @@ impl<T> Queue<T> {
 
     // find first item that satisfies the f filter
     // does not block
-    pub async fn find_first<F>(&mut self, f: F) -> Option<T>
+    pub async fn find_first<F>(&self, f: F) -> Option<T>
     where
         F: Fn(&T) -> bool,
     {
@@ -47,7 +47,7 @@ impl<T> Queue<T> {
     }
 
     // blocking pop
-    pub async fn pop_block(&mut self) -> T {
+    pub async fn pop_block(&self) -> T {
         loop {
             let mut q = self.q.lock().await;
             let ret = q.pop_front();
@@ -62,7 +62,7 @@ impl<T> Queue<T> {
         }
     }
 
-    pub async fn clear(&mut self) {
+    pub async fn clear(&self) {
         let mut q = self.q.lock().await;
         *q = VecDeque::new();
     }
@@ -72,11 +72,10 @@ impl<T> Queue<T> {
     //     let mut q = self.q.lock().await;
 
     //     // notify on way out so don't start blockeds
-    //     self.cond.notify();
     //     q.pop_front()
     // }
 
-    pub async fn replace(&mut self, q: VecDeque<T>) {
+    pub async fn replace(&self, q: VecDeque<T>) {
         let mut val = self.q.lock().await;
         *val = q;
         self.cond.notify();

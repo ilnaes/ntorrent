@@ -374,7 +374,7 @@ impl Worker {
     }
 
     // interacts with anyone trying to connect
-    pub async fn upload(&mut self, mut peer_q: Queue<TcpStream>, mut done: mpsc::Sender<()>) {
+    pub async fn upload(&mut self, peer_q: Queue<TcpStream>, mut done: mpsc::Sender<()>) {
         while !self.stop {
             self.disconnect = false;
             tokio::select! {

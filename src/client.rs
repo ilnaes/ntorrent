@@ -8,7 +8,6 @@ use crate::utils::bitfield::Bitfield;
 use crate::utils::queue::Queue;
 use crate::worker::Worker;
 use ctrlc;
-use std::path::Path;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, Mutex};
@@ -24,12 +23,11 @@ pub struct Client<'a> {
     pub btx: Arc<Mutex<broadcast::Sender<Op>>>,
     pub partial: Partial<'a>,
     channel_length: usize,
-    buf: Vec<u8>,
 }
 
 async fn listen(
     port: u16,
-    mut peer_q: Queue<TcpStream>,
+    peer_q: Queue<TcpStream>,
     mut done_q: mpsc::Receiver<()>,
     mut erx: broadcast::Receiver<()>,
 ) {
@@ -60,10 +58,9 @@ impl<'a> Client<'a> {
         }
         let handshake = Handshake::from(&torrent).serialize();
 
-        let partial = Partial::from(&torrent);
+        let partial = Partial::from(torrent);
 
         let bf_len = (torrent.length - 1) / (8 * torrent.piece_length as usize) + 1;
-        let len = torrent.length;
         let n = torrent.pieces.len().await;
         let (btx, _) = broadcast::channel(n);
 
@@ -78,84 +75,6 @@ impl<'a> Client<'a> {
             bf: Arc::new(Mutex::new(Bitfield::new(bf_len))),
             btx: Arc::new(Mutex::new(btx)),
             channel_length: bf_len,
-            buf: vec![0; len],
-        }
-    }
-
-    // returns None if no files exist
-    // Some(true) if all files exist and are verified
-    // Some(false) otherwise
-    pub async fn has(&mut self) -> Option<bool> {
-        let mut all = true;
-        let mut exists = false;
-        let mut i = 0;
-        let mut buf = vec![0; self.torrent.length];
-
-        for f in self.torrent.files.iter() {
-            let path = f.path.join("/");
-            let path = Path::new(path.as_str());
-
-            // see if path exist
-            if path.exists() {
-                exists = true;
-                let file = std::fs::read(path);
-                if let Ok(v) = file {
-                    if v.len() == f.length {
-                        buf[i..i + f.length as usize].copy_from_slice(v.as_slice());
-                    } else {
-                        all = false;
-                    }
-                } else {
-                    all = false;
-                }
-            } else {
-                all = false;
-            }
-            i += f.length;
-        }
-
-        if !exists {
-            None
-        } else {
-            if all {
-                // verify all pieces
-                {
-                    let q = self.torrent.pieces.get_q();
-                    let q = q.lock().await;
-                    let mut iter = q.iter();
-                    let mut i: u64 = 0;
-                    let len = self.torrent.piece_length as usize;
-
-                    while let Some(piece) = iter.next() {
-                        let ceil = std::cmp::min(i as usize + len, self.torrent.length);
-                        if !piece.verify(&buf[i as usize..ceil]) {
-                            all = false;
-                            break;
-                        } else {
-                            if (i / (len as u64)) % 100 == 99 {
-                                println!(
-                                    "Verified {:.2}%",
-                                    100f64 * (i + len as u64) as f64 / self.torrent.length as f64
-                                );
-                            }
-                        }
-                        i += len as u64;
-                    }
-                }
-
-                if all {
-                    self.buf = buf;
-                    // let mut p = self.progress.lock().await;
-                    // p.left = 0;
-
-                    let mut bf = self.bf.lock().await;
-                    let len = bf.len();
-                    *bf = Bitfield::from(vec![255; len]);
-
-                    // self.torrent.pieces.clear().await;
-                }
-            }
-            Some(all)
         }
     }
 
@@ -218,7 +137,6 @@ impl<'a> Client<'a> {
         mut mrx: mpsc::Receiver<Op>,
         mut erx: broadcast::Receiver<()>,
     ) {
-        let n = self.torrent.pieces.len().await;
         let mut received: usize = 0;
         let mut served = 0;
 
@@ -238,7 +156,7 @@ impl<'a> Client<'a> {
                     match op.op_type {
                         OpType::OpRequest(i, s, len) => {
                             if let Some(b) = self.partial.get(i, s, len).await {
-                                // let start = i as usize * self.torrent.piece_length as usize;
+                                // send piece
                                 mtx[op.id as usize-1].send(Op {
                                     id: 0,
                                     op_type: OpType::OpMessage(Message::Piece(i, s, b)),
@@ -246,36 +164,13 @@ impl<'a> Client<'a> {
                                 served += len as usize;
                                 println!("Serving piece {} to Worker {} --- {:.2} KB uploaded", i, op.id, served as f64/1024f64);
                             } else {
-                                // let bf = self.bf.lock().await;
-                                // if !bf.has(i as usize) {
                                 mtx[i as usize-1].send(Op {
                                     id: 0,
                                     op_type: OpType::OpDisconnect,
                                 }).await.ok();
-                                // continue
-                                // }
                             }
-
-                            // send piece
                         },
                         OpType::OpPiece(idx, res) => {
-                            // let start = idx as usize * self.torrent.piece_length as usize;
-                            // self.buf[start..start + res.len()].copy_from_slice(res.as_slice());
-                            // {
-                            //     // check if already has piece
-                            //     let mut bf = self.bf.lock().await;
-                            //     if bf.has(idx as usize) {
-                            //         continue
-                            //     }
-                            //     bf.add(idx as usize);
-                            // }
-                            // {
-                            //     // update progress
-                            //     let mut prog = self.progress.lock().await;
-                            //     prog.downloaded += res.len();
-                            //     prog.left -= res.len();
-                            // }
-
                             if let Some(finished) = self.partial.update(idx, res.clone()).await {
                                 // broadcast HAVE to all workers
                                 let btx = self.btx.lock().await;
@@ -293,17 +188,8 @@ impl<'a> Client<'a> {
                                 }
                             }
 
-                            println!("Got piece {} from Worker {} --- {:.2}%", idx, op.id, 100f32 * (received as f32)/(n as f32));
+                            println!("Got piece {} from Worker {} --- {:.2}%", idx, op.id, 100f32 * (received as f32)/(self.channel_length as f32));
                             received += 1;
-
-                            // if received == n {
-                            //     self.write_file(self.buf.as_slice());
-                            //     let btx = self.btx.lock().await;
-                            //     btx.send(Op {
-                            //         id: 0,
-                            //         op_type: OpType::OpStop,
-                            //     }).ok();
-                            // }
                         },
                         _ => (),
                     }
@@ -314,34 +200,11 @@ impl<'a> Client<'a> {
         println!("Receiver stopping");
     }
 
-    // fn write_file(&self, buf: &[u8]) {
-    //     let mut i = 0;
-
-    //     for f in self.torrent.files.iter() {
-    //         let path = &f.path.join("/");
-    //         println!("Writing to {}", path);
-    //         let path = Path::new(&path);
-
-    //         // create directories if necessary
-    //         let prefix = path.parent().unwrap();
-    //         std::fs::create_dir_all(prefix).expect("Could not create directories");
-
-    //         let mut file =
-    //             File::create(&path).expect(&format!("Could not create {}", path.to_str().unwrap()));
-
-    //         file.write(&buf[i..i + f.length])
-    //             .expect("Could not write to file");
-    //         i += f.length;
-    //     }
-    //     println!("FINISHED");
-    // }
-
     pub async fn serve(&mut self, download: bool) {
         let mut peerlist = Peerlist::from(&self);
-        let n = self.torrent.pieces.len().await;
 
         // channel for client <- workers
-        let (mtx, mrx) = mpsc::channel(std::cmp::max(n, 10));
+        let (mtx, mrx) = mpsc::channel(std::cmp::max(self.channel_length, 10));
 
         // done queue for listeners
         let (done_tx, done_rx) = mpsc::channel(self.nlisteners as usize);
