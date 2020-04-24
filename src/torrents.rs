@@ -106,7 +106,7 @@ pub fn split_hash(pieces: Vec<u8>, piece_length: usize, length: usize) -> VecDeq
 }
 
 impl Torrent {
-    pub fn new(s: &str, dir: String) -> Torrent {
+    pub fn new(s: &str, dir: &str) -> Torrent {
         let t = TorrentFile::new(s);
         let info_hash = t.info.hash();
 
@@ -123,7 +123,7 @@ impl Torrent {
                     f.path.insert(0, t.info.name.clone());
 
                     if dir != "" {
-                        f.path.insert(0, dir.clone());
+                        f.path.insert(0, dir.to_string());
                     }
                 }
             }
@@ -132,7 +132,7 @@ impl Torrent {
             let mut path = vec![t.info.name.clone()];
 
             if dir != "" {
-                path.insert(0, dir.clone());
+                path.insert(0, dir.to_string());
             }
             files = vec![FileInfo {
                 length: t.info.length.unwrap(),

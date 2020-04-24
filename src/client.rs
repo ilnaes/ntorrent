@@ -21,17 +21,18 @@ pub struct Progress {
     pub left: usize,
 }
 
-pub struct Client {
+pub struct Client<'a> {
     ndownloaders: u64,
     nlisteners: u64,
-    pub torrent: Torrent,
+    pub torrent: &'a Torrent,
     pub handshake: Vec<u8>,
     pub peer_list: Queue<String>,
     pub progress: Arc<Mutex<Progress>>,
     pub port: u16,
     pub bf: Arc<Mutex<Bitfield>>,
     pub btx: Arc<Mutex<broadcast::Sender<Op>>>,
-    pub partial: Partial,
+    pub partial: Partial<'a>,
+    channel_length: usize,
     buf: Vec<u8>,
 }
 
@@ -61,9 +62,8 @@ async fn listen(
     println!("Listener stopping");
 }
 
-impl Client {
-    pub async fn new(s: &str, dir: String, port: u16) -> Client {
-        let torrent = Torrent::new(s, dir.clone());
+impl<'a> Client<'a> {
+    pub async fn from(torrent: &'a Torrent, port: u16) -> Client<'a> {
         if torrent.length == 0 {
             panic!("no pieces");
         }
@@ -91,6 +91,7 @@ impl Client {
             handshake,
             bf: Arc::new(Mutex::new(Bitfield::new(bf_len))),
             btx: Arc::new(Mutex::new(btx)),
+            channel_length: bf_len,
             buf: vec![0; len],
         }
     }
@@ -165,7 +166,7 @@ impl Client {
                     let len = bf.len();
                     *bf = Bitfield::from(vec![255; len]);
 
-                    self.torrent.pieces.clear().await;
+                    // self.torrent.pieces.clear().await;
                 }
             }
             Some(all)
@@ -191,7 +192,7 @@ impl Client {
                     let btx = self.btx.lock().await;
                     rx = btx.subscribe();
                 }
-                let (mtx1, mrx1) = mpsc::channel::<Op>(self.torrent.length);
+                let (mtx1, mrx1) = mpsc::channel::<Op>(self.channel_length);
                 vec_mtx.push(mtx1);
                 let mut w = Worker::from_client(&self, i + 1, rx, mrx1, mtx.clone());
                 tokio::spawn(async move {
@@ -208,7 +209,7 @@ impl Client {
                 let btx = self.btx.lock().await;
                 rx = btx.subscribe();
             }
-            let (mtx1, mrx1) = mpsc::channel::<Op>(self.torrent.length);
+            let (mtx1, mrx1) = mpsc::channel::<Op>(self.channel_length);
             vec_mtx.push(mtx1);
             let pq = peer_q.clone();
             let dq = done_q.clone();
@@ -282,6 +283,9 @@ impl Client {
                                     continue
                                 }
                                 bf.add(idx as usize);
+                            }
+                            if !self.partial.update(idx, res.clone()).await {
+                                continue
                             }
                             {
                                 // update progress

@@ -1,4 +1,5 @@
 use crate::client::Client;
+use crate::torrents::Torrent;
 use clap::{App, Arg};
 
 mod client;
@@ -38,7 +39,8 @@ async fn main() {
     let port: u16 = matches.value_of("p").unwrap_or("4444").parse().unwrap();
     let dir = matches.value_of("d").unwrap_or("");
 
-    let mut t = Client::new(file, dir.to_string(), port).await;
+    let mut torrent = Torrent::new(file, dir);
+    let mut t = Client::from(&mut torrent, port).await;
 
     let res = t.has().await;
 

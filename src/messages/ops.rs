@@ -4,8 +4,8 @@ use crate::messages::messages::Message;
 pub enum OpType {
     OpMessage(Message),
     OpDisconnect,
-    OpPiece(u32, Vec<u8>),
-    OpRequest(u32, u32, u32),
+    OpPiece(u32, Vec<u8>),    // idx * payload
+    OpRequest(u32, u32, u32), // idx * offset * len
     OpStop,
 }
 
