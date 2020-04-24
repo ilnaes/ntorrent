@@ -36,6 +36,7 @@ impl<'a> Partial<'a> {
 
         let bf_len = (torrent.length - 1) / (8 * torrent.piece_length as usize) + 1;
         let bf = Bitfield::new(bf_len);
+        let len = (torrent.length - 1) / (torrent.piece_length as usize) + 1;
 
         let buf = vec![0; torrent.length];
 
@@ -56,7 +57,7 @@ impl<'a> Partial<'a> {
             torrent,
             file,
             buf,
-            num_pieces: bf_len,
+            num_pieces: len,
             received: 0,
             progress: Arc::new(Mutex::new(Progress {
                 downloaded: 0,

@@ -4,7 +4,6 @@ use crate::messages::ops::*;
 use crate::partial::Partial;
 use crate::peerlist::Peerlist;
 use crate::torrents::Torrent;
-use crate::utils::bitfield::Bitfield;
 use crate::utils::queue::Queue;
 use crate::worker::Worker;
 use ctrlc;
@@ -19,7 +18,6 @@ pub struct Client<'a> {
     pub handshake: Vec<u8>,
     pub peer_list: Queue<String>,
     pub port: u16,
-    pub bf: Arc<Mutex<Bitfield>>,
     pub btx: Arc<Mutex<broadcast::Sender<Op>>>,
     pub partial: Partial<'a>,
     channel_length: usize,
@@ -60,7 +58,6 @@ impl<'a> Client<'a> {
 
         let partial = Partial::from(torrent);
 
-        let bf_len = (torrent.length - 1) / (8 * torrent.piece_length as usize) + 1;
         let n = torrent.pieces.len().await;
         let (btx, _) = broadcast::channel(n);
 
@@ -72,9 +69,8 @@ impl<'a> Client<'a> {
             torrent,
             peer_list: Queue::new(),
             handshake,
-            bf: Arc::new(Mutex::new(Bitfield::new(bf_len))),
             btx: Arc::new(Mutex::new(btx)),
-            channel_length: bf_len,
+            channel_length: n,
         }
     }
 

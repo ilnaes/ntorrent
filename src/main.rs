@@ -45,6 +45,7 @@ async fn main() {
     if res == None {
         t.serve(true).await;
     } else if let Some(true) = res {
+        println!("SEEDING");
         t.serve(false).await;
     }
 

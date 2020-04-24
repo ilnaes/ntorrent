@@ -54,7 +54,7 @@ impl Worker {
             work: c.torrent.pieces.clone(),
             handshake: c.handshake.clone(),
             info_hash: c.torrent.info_hash.clone(),
-            bf: c.bf.clone(),
+            bf: c.partial.bf.clone(),
             disconnect: false,
 
             stream: OpStream::new(),
