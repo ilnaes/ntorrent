@@ -408,7 +408,7 @@ impl Worker {
                     self.reach_peer(ip).await;
                 },
                 Ok(op) = self.brx.recv() => {
-                    if op.op_type == OpType::OpStop {
+                    if op.op_type == OpType::OpStop ||  op.op_type == OpType::OpDownStop {
                         self.stop = true;
                     }
                 },

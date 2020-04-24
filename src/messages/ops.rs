@@ -6,6 +6,7 @@ pub enum OpType {
     OpDisconnect,
     OpPiece(u32, Vec<u8>),    // idx * payload
     OpRequest(u32, u32, u32), // idx * offset * len
+    OpDownStop,
     OpStop,
 }
 

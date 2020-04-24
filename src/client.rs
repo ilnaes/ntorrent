@@ -176,10 +176,9 @@ impl<'a> Client<'a> {
                                 }).ok();
 
                                 if finished {
-                                    let btx = self.btx.lock().await;
                                     btx.send(Op {
                                         id: 0,
-                                        op_type: OpType::OpStop,
+                                        op_type: OpType::OpDownStop,
                                     }).ok();
                                 }
                             }
