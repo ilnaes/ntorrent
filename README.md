@@ -6,4 +6,4 @@ This is a simple cli program that will download torrents.  The basic command is
 ntorrent file.torrent
 ```
 
-There are options for specifying the upload port number and download directory.  See `ntorrent --help` for details.  `ntorrent` stores the download in memory and only writes to file upon completion of download.  As such `ntorrent` cannot resume partial downloads, but it will confirm overwriting of any files that are already present.  However, `ntorrent` can seed files that have been completely downloaded.
+There are options for specifying the upload port number and download directory.  See `ntorrent --help` for details.  `ntorrent` stores the download in memory and writes to file upon completion of download.  Partial downloads get recorded to a .part file which allows `ntorrent` to resume downloads.  Completely downloaded files can also be seeded.

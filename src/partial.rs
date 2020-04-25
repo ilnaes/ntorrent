@@ -58,14 +58,14 @@ impl<'a> Partial<'a> {
     // determines if there has been progress
     pub async fn recover(&mut self) {
         let exists = Path::new(&self.filename).exists();
-        let file = OpenOptions::new()
-            .read(true)
-            .append(true)
-            .create(true)
-            .open(&self.filename)
-            .ok();
 
         if exists {
+            let file = OpenOptions::new()
+                .read(true)
+                .append(true)
+                .create(true)
+                .open(&self.filename)
+                .ok();
             // read in .part file
             if self.read_part(file).await == None {
                 std::process::exit(0);
@@ -74,6 +74,12 @@ impl<'a> Partial<'a> {
             // already have file
             self.done = true;
         } else {
+            let file = OpenOptions::new()
+                .read(true)
+                .append(true)
+                .create(true)
+                .open(&self.filename)
+                .ok();
             self.file = file;
         }
     }
@@ -258,10 +264,8 @@ impl<'a> Partial<'a> {
             return None;
         }
 
-        let start = idx as usize * self.torrent.piece_length as usize;
-        return Some(
-            self.buf[start + offset as usize..start + offset as usize + len as usize].to_vec(),
-        );
+        let start = (offset + idx * self.torrent.piece_length) as usize;
+        return Some(self.buf[start..start + len as usize].to_vec());
     }
 
     fn write_file(&self) {

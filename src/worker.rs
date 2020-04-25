@@ -182,7 +182,7 @@ impl Worker {
         let piece = self.current.clone()?;
 
         if i != piece.1 {
-            println!("Not correct piece");
+            println!("Expecting {} but got {}.  Not correct piece", piece.1, i);
             return None;
         }
         if s as usize + buf.len() > self.buf.len() {

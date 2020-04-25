@@ -57,7 +57,7 @@ impl<'a> Client<'a> {
         let mut partial = Partial::from(&torrent, dir);
         partial.recover().await;
 
-        let n = torrent.pieces.len().await;
+        let n = std::cmp::max(torrent.pieces.len().await, 10);
 
         Client {
             port,
@@ -123,7 +123,6 @@ impl<'a> Client<'a> {
         mut erx: broadcast::Receiver<()>,
     ) {
         let mut received: usize = 0;
-        let mut served = 0;
 
         loop {
             tokio::select! {
@@ -139,16 +138,15 @@ impl<'a> Client<'a> {
                 Some(op) = mrx.recv() => {
                     match op.op_type {
                         OpType::OpRequest(i, s, len) => {
+                            println!("Serving piece {} to Worker {}", i, op.id);
                             if let Some(b) = self.partial.get(i, s, len).await {
                                 // send piece
                                 mtx[op.id as usize-1].send(Op {
                                     id: 0,
                                     op_type: OpType::OpMessage(Message::Piece(i, s, b)),
                                 }).await.ok();
-                                served += len as usize;
-                                println!("Serving piece {} to Worker {} --- {:.2} KB uploaded", i, op.id, served as f64/1024f64);
                             } else {
-                                mtx[i as usize-1].send(Op {
+                                mtx[op.id as usize-1].send(Op {
                                     id: 0,
                                     op_type: OpType::OpDisconnect,
                                 }).await.ok();
