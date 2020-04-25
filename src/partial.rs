@@ -1,6 +1,7 @@
 use crate::torrents::Torrent;
 use crate::utils::bitfield::Bitfield;
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
+use std::collections::VecDeque;
 use std::fs::{remove_file, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::Path;
@@ -37,13 +38,11 @@ impl<'a> Partial<'a> {
         let bf = Bitfield::new(bf_len);
         let len = (torrent.length - 1) / (torrent.piece_length as usize) + 1;
 
-        let buf = vec![0; torrent.length];
-
         Partial {
             torrent,
             file: None,
             filename,
-            buf,
+            buf: vec![0; torrent.length],
             num_pieces: len,
             received: 0,
             progress: Arc::new(Mutex::new(Progress {
@@ -68,41 +67,72 @@ impl<'a> Partial<'a> {
 
         if exists {
             // read in .part file
-            if self.read_part(file) == None {
-                // TODO
+            if self.read_part(file).await == None {
+                std::process::exit(0);
             }
         } else if let Some(true) = self.has().await {
             // already have file
             self.done = true;
+        } else {
+            self.file = file;
         }
     }
 
     // reads a .part file and updates self
     // returns None if anything goes wrong indicating corrupt part file
-    fn read_part(&mut self, mut file: Option<File>) -> Option<()> {
+    async fn read_part(&mut self, mut file: Option<File>) -> Option<()> {
         let f = file.as_mut()?;
         let num_bytes = f.metadata().ok()?.len();
         let n = self.torrent.piece_length as u64;
 
-        if num_bytes % (n + 4) != 0 {
+        if num_bytes % (n + 4) != 0 || num_bytes > (n + 4) * self.torrent.piece_length as u64 {
             return None;
         }
 
+        let bf_len = (self.torrent.length - 1) / (8 * self.torrent.piece_length as usize) + 1;
+        let mut bf = Bitfield::new(bf_len);
+
+        let mut buf = vec![0; self.torrent.piece_length as usize];
+        let q = self.torrent.pieces.get_q();
+        let q = q.lock().await;
+
         let mut i = 0;
-        let mut buf = vec![0; n as usize];
         while i < num_bytes {
             let idx = f.read_u32::<BigEndian>().ok()? as usize;
             let start = idx * self.torrent.piece_length as usize;
 
+            // check if a double piece (would be bad)
+            if bf.has(idx) {
+                return None;
+            }
+
+            bf.add(idx);
             f.read_exact(buf.as_mut_slice()).ok()?;
+
+            // verify
+            if !q.get(idx)?.verify(&buf) {
+                return None;
+            }
             self.buf[start..start + n as usize].copy_from_slice(&buf);
 
-            i += n;
+            i += n + 4;
         }
+        drop(q);
 
-        // TODO: verify, update bitfield, and remove work
+        // get rid of pieces that we now have
+        let mut newq = VecDeque::new();
+        for i in 0..self.torrent.pieces.len().await {
+            let piece = self.torrent.pieces.pop_block().await;
 
+            if !bf.has(i) {
+                newq.push_back(piece);
+            }
+        }
+        self.torrent.pieces.replace(newq).await;
+
+        self.bf = Arc::new(Mutex::new(bf));
         self.file = file;
+        self.received = (num_bytes / (n + 4)) as usize;
 
         Some(())
     }

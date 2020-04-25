@@ -42,7 +42,6 @@ async fn main() {
     // TODO: figure out borrow and reference issue
     let torrent = Torrent::new(file, dir);
     let mut t = Client::from(&torrent, port, dir).await;
-    t.partial.recover().await;
     t.serve().await;
 
     // if res == None {
