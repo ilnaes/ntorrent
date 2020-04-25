@@ -31,7 +31,7 @@ async fn main() {
             Arg::with_name("d")
                 .short("d")
                 .help("The director you want to download to (default: current directory)")
-                .value_name("PORT"),
+                .value_name("DIR"),
         )
         .get_matches();
 
@@ -39,15 +39,11 @@ async fn main() {
     let port: u16 = matches.value_of("p").unwrap_or("4444").parse().unwrap();
     let dir = matches.value_of("d").unwrap_or("");
 
+    // TODO: figure out borrow and reference issue
     let torrent = Torrent::new(file, dir);
-    let mut t = Client::from(&torrent, port).await;
-    let res = t.partial.has().await;
-    if res == None {
-        t.serve(true).await;
-    } else if let Some(true) = res {
-        println!("SEEDING");
-        t.serve(false).await;
-    }
+    let mut t = Client::from(&torrent, port, dir).await;
+    t.partial.recover().await;
+    t.serve().await;
 
     // if res == None {
     //     t.serve(true).await;

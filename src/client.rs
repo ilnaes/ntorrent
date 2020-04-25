@@ -7,9 +7,8 @@ use crate::torrents::Torrent;
 use crate::utils::queue::Queue;
 use crate::worker::Worker;
 use ctrlc;
-use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{broadcast, mpsc, Mutex};
+use tokio::sync::{broadcast, mpsc};
 
 pub struct Client<'a> {
     ndownloaders: u64,
@@ -18,7 +17,6 @@ pub struct Client<'a> {
     pub handshake: Vec<u8>,
     pub peer_list: Queue<String>,
     pub port: u16,
-    pub btx: Arc<Mutex<broadcast::Sender<Op>>>,
     pub partial: Partial<'a>,
     channel_length: usize,
 }
@@ -37,6 +35,7 @@ async fn listen(
 
     while let Some(()) = done_q.recv().await {
         tokio::select! {
+            // TODO: rate limit
             Ok((socket, _addr)) = listener.accept() => {
                 peer_q.push(socket).await;
             },
@@ -50,16 +49,15 @@ async fn listen(
 }
 
 impl<'a> Client<'a> {
-    pub async fn from(torrent: &'a Torrent, port: u16) -> Client<'a> {
+    pub async fn from(torrent: &'a Torrent, port: u16, dir: &str) -> Client<'a> {
         if torrent.length == 0 {
             panic!("no pieces");
         }
         let handshake = Handshake::from(&torrent).serialize();
-
-        let partial = Partial::from(torrent);
+        let mut partial = Partial::from(&torrent, dir);
+        partial.recover().await;
 
         let n = torrent.pieces.len().await;
-        let (btx, _) = broadcast::channel(n);
 
         Client {
             port,
@@ -69,7 +67,6 @@ impl<'a> Client<'a> {
             torrent,
             peer_list: Queue::new(),
             handshake,
-            btx: Arc::new(Mutex::new(btx)),
             channel_length: n,
         }
     }
@@ -78,6 +75,7 @@ impl<'a> Client<'a> {
     async fn manage_workers(
         &mut self,
         mtx: mpsc::Sender<Op>,
+        btx: broadcast::Sender<Op>,
         peer_q: Queue<TcpStream>,
         mut done_q: mpsc::Sender<()>,
         download: bool,
@@ -88,14 +86,9 @@ impl<'a> Client<'a> {
         if download {
             // spawn downloaders
             for _ in 0..self.ndownloaders {
-                let rx;
-                {
-                    let btx = self.btx.lock().await;
-                    rx = btx.subscribe();
-                }
                 let (mtx1, mrx1) = mpsc::channel::<Op>(self.channel_length);
                 vec_mtx.push(mtx1);
-                let mut w = Worker::from_client(&self, i + 1, rx, mrx1, mtx.clone());
+                let mut w = Worker::from_client(&self, i + 1, btx.subscribe(), mrx1, mtx.clone());
                 tokio::spawn(async move {
                     w.download().await;
                 });
@@ -105,17 +98,12 @@ impl<'a> Client<'a> {
 
         // spawn listeners
         for _ in 0..self.nlisteners {
-            let rx;
-            {
-                let btx = self.btx.lock().await;
-                rx = btx.subscribe();
-            }
             let (mtx1, mrx1) = mpsc::channel::<Op>(self.channel_length);
             vec_mtx.push(mtx1);
             let pq = peer_q.clone();
             let dq = done_q.clone();
 
-            let mut w = Worker::from_client(&self, i + 1, rx, mrx1, mtx.clone());
+            let mut w = Worker::from_client(&self, i + 1, btx.subscribe(), mrx1, mtx.clone());
             tokio::spawn(async move {
                 w.upload(pq, dq).await;
             });
@@ -131,6 +119,7 @@ impl<'a> Client<'a> {
         &mut self,
         mut mtx: Vec<mpsc::Sender<Op>>,
         mut mrx: mpsc::Receiver<Op>,
+        btx: broadcast::Sender<Op>,
         mut erx: broadcast::Receiver<()>,
     ) {
         let mut received: usize = 0;
@@ -140,7 +129,6 @@ impl<'a> Client<'a> {
             tokio::select! {
                 Ok(()) = erx.recv() => {
                     // broadcast STOP to all workers
-                    let btx = self.btx.lock().await;
                     btx.send(Op {
                         id: 0,
                         op_type: OpType::OpStop
@@ -167,9 +155,8 @@ impl<'a> Client<'a> {
                             }
                         },
                         OpType::OpPiece(idx, res) => {
-                            if let Some(finished) = self.partial.update(idx, res.clone()).await {
+                            if let Some(finished) = self.partial.update(idx, res).await {
                                 // broadcast HAVE to all workers
-                                let btx = self.btx.lock().await;
                                 btx.send(Op {
                                     id: 0,
                                     op_type: OpType::OpMessage(Message::Have(idx))
@@ -195,7 +182,7 @@ impl<'a> Client<'a> {
         println!("Receiver stopping");
     }
 
-    pub async fn serve(&mut self, download: bool) {
+    pub async fn serve(&mut self) {
         let mut peerlist = Peerlist::from(&self);
 
         // channel for client <- workers
@@ -206,12 +193,22 @@ impl<'a> Client<'a> {
 
         let peer_q = Queue::new();
 
-        let (tx, rx) = broadcast::channel(1);
+        // shutdown broadcast
+        let (tx, erx) = broadcast::channel(1);
         let tx1 = tx.clone();
 
-        // vector of channels for workers <- client
+        // broadcast channel for workers <- client
+        let (btx, _) = broadcast::channel(self.channel_length);
+
+        // vector of individual channels for workers <- client
         let vec_mtx = self
-            .manage_workers(mtx, peer_q.clone(), done_tx, download)
+            .manage_workers(
+                mtx,
+                btx.clone(),
+                peer_q.clone(),
+                done_tx,
+                !self.partial.done,
+            )
             .await;
 
         let port = self.port;
@@ -225,7 +222,7 @@ impl<'a> Client<'a> {
 
         tokio::join!(
             peerlist.poll_peerlist(tx.subscribe()),
-            self.receive(vec_mtx, mrx, rx),
+            self.receive(vec_mtx, mrx, btx, erx),
             listen(port, peer_q, done_rx, tx.subscribe())
         );
     }

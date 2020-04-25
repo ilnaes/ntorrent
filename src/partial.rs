@@ -1,7 +1,7 @@
 use crate::torrents::Torrent;
 use crate::utils::bitfield::Bitfield;
-use byteorder::{BigEndian, WriteBytesExt};
-use std::fs::{File, OpenOptions};
+use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
+use std::fs::{remove_file, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::Arc;
@@ -15,24 +15,23 @@ pub struct Progress {
 
 pub struct Partial<'a> {
     file: Option<File>,
-    // filename: String,
+    filename: String,
     buf: Vec<u8>,
     received: usize,
     torrent: &'a Torrent,
     num_pieces: usize,
     pub progress: Arc<Mutex<Progress>>,
     pub bf: Arc<Mutex<Bitfield>>,
+    pub done: bool,
 }
 
 impl<'a> Partial<'a> {
-    pub fn from(torrent: &Torrent) -> Partial {
-        let filename = format!("{}{}", torrent.name, ".part");
-        let mut file = OpenOptions::new()
-            .read(true)
-            .append(true)
-            .create(true)
-            .open(filename.clone())
-            .ok();
+    pub fn from(torrent: &'a Torrent, dir: &str) -> Partial<'a> {
+        let filename = if dir == "" {
+            format!("{}{}", torrent.name, ".part")
+        } else {
+            format!("{}/{}{}", dir, torrent.name, ".part")
+        };
 
         let bf_len = (torrent.length - 1) / (8 * torrent.piece_length as usize) + 1;
         let bf = Bitfield::new(bf_len);
@@ -40,22 +39,10 @@ impl<'a> Partial<'a> {
 
         let buf = vec![0; torrent.length];
 
-        let mut file_buf = Vec::new();
-
-        if let Some(f) = file.as_mut() {
-            if let Ok(_) = f.read_to_end(&mut file_buf) {
-                let n = 4 + torrent.piece_length as usize;
-                if buf.len() % n == 0 {
-                    for _ in 1..(buf.len() / n) {
-                        // TODO
-                    }
-                }
-            }
-        }
-
         Partial {
             torrent,
-            file,
+            file: None,
+            filename,
             buf,
             num_pieces: len,
             received: 0,
@@ -65,13 +52,65 @@ impl<'a> Partial<'a> {
                 left: torrent.length,
             })),
             bf: Arc::new(Mutex::new(bf)),
+            done: false,
         }
+    }
+
+    // determines if there has been progress
+    pub async fn recover(&mut self) {
+        let exists = Path::new(&self.filename).exists();
+        let file = OpenOptions::new()
+            .read(true)
+            .append(true)
+            .create(true)
+            .open(&self.filename)
+            .ok();
+
+        if exists {
+            // read in .part file
+            if self.read_part(file) == None {
+                // TODO
+            }
+        } else if let Some(true) = self.has().await {
+            // already have file
+            self.done = true;
+        }
+    }
+
+    // reads a .part file and updates self
+    // returns None if anything goes wrong indicating corrupt part file
+    fn read_part(&mut self, mut file: Option<File>) -> Option<()> {
+        let f = file.as_mut()?;
+        let num_bytes = f.metadata().ok()?.len();
+        let n = self.torrent.piece_length as u64;
+
+        if num_bytes % (n + 4) != 0 {
+            return None;
+        }
+
+        let mut i = 0;
+        let mut buf = vec![0; n as usize];
+        while i < num_bytes {
+            let idx = f.read_u32::<BigEndian>().ok()? as usize;
+            let start = idx * self.torrent.piece_length as usize;
+
+            f.read_exact(buf.as_mut_slice()).ok()?;
+            self.buf[start..start + n as usize].copy_from_slice(&buf);
+
+            i += n;
+        }
+
+        // TODO: verify, update bitfield, and remove work
+
+        self.file = file;
+
+        Some(())
     }
 
     // returns None if no files exist
     // Some(true) if all files exist and are verified
     // Some(false) otherwise
-    pub async fn has(&mut self) -> Option<bool> {
+    async fn has(&mut self) -> Option<bool> {
         let mut all = true;
         let mut exists = false;
         let mut i = 0;
@@ -115,8 +154,8 @@ impl<'a> Partial<'a> {
                     while let Some(piece) = iter.next() {
                         let ceil = std::cmp::min(i as usize + len, self.torrent.length);
                         if !piece.verify(&buf[i as usize..ceil]) {
-                            all = false;
-                            break;
+                            // bad piece
+                            return Some(false);
                         } else {
                             if (i / (len as u64)) % 100 == 99 {
                                 println!(
@@ -129,6 +168,7 @@ impl<'a> Partial<'a> {
                     }
                 }
 
+                // all pieces verified
                 self.buf = buf;
                 let mut p = self.progress.lock().await;
                 p.left = 0;
@@ -173,6 +213,7 @@ impl<'a> Partial<'a> {
         }
 
         if self.received == self.num_pieces {
+            self.done = true;
             self.write_file();
             Some(true)
         } else {
@@ -212,6 +253,7 @@ impl<'a> Partial<'a> {
                 .expect("Could not write to file");
             i += f.length;
         }
+        remove_file(self.filename.clone()).ok();
         println!("FINISHED");
     }
 }
