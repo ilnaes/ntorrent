@@ -31,19 +31,21 @@ impl OpStream {
             if buf.len() == 0 {
                 return Some(Message::KeepAlive);
             }
-            Message::deserialize(buf.as_ref())
-        } else {
-            None
+            return Message::deserialize(buf.as_ref());
         }
+        None
     }
 
     pub async fn send_message(&mut self, m: Message) -> Option<()> {
         let msg = m.serialize();
         if let Some(s) = &mut self.stream {
-            timeout(consts::TIMEOUT, s.send(Bytes::from(msg)))
+            if let Err(e) = timeout(consts::TIMEOUT, s.send(Bytes::from(msg)))
                 .await
                 .ok()?
-                .ok()?;
+            {
+                eprintln!("Error writing: {}", e);
+                return None;
+            }
             return Some(());
         }
         None

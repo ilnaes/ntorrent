@@ -57,9 +57,7 @@ impl<'a> Partial<'a> {
 
     // determines if there has been progress
     pub async fn recover(&mut self) {
-        let exists = Path::new(&self.filename).exists();
-
-        if exists {
+        if Path::new(&self.filename).exists() {
             let file = OpenOptions::new()
                 .read(true)
                 .append(true)
@@ -67,21 +65,24 @@ impl<'a> Partial<'a> {
                 .open(&self.filename)
                 .ok();
             // read in .part file
-            if self.read_part(file).await == None {
-                std::process::exit(0);
+            if self.read_part(file).await != None {
+                return;
             }
+
+            // error in reading part file so erase bad file
+            remove_file(&self.filename).ok();
         } else if let Some(true) = self.has().await {
             // already have file
             self.done = true;
-        } else {
-            let file = OpenOptions::new()
-                .read(true)
-                .append(true)
-                .create(true)
-                .open(&self.filename)
-                .ok();
-            self.file = file;
+            return;
         }
+
+        self.file = OpenOptions::new()
+            .read(true)
+            .append(true)
+            .create(true)
+            .open(&self.filename)
+            .ok();
     }
 
     // reads a .part file and updates self
@@ -101,6 +102,8 @@ impl<'a> Partial<'a> {
         let mut buf = vec![0; self.torrent.piece_length as usize];
         let q = self.torrent.pieces.get_q();
         let q = q.lock().await;
+
+        println!("Recovering from {}", self.filename);
 
         let mut i = 0;
         while i < num_bytes {

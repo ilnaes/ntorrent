@@ -337,21 +337,16 @@ impl Worker {
         loop {
             tokio::select! {
                 op = self.mrx.recv() => {
-                    if self.process_op(op).await == None {
-                        println!("BAD1");
+                    if self.process_op(op.clone()).await == None {
                         break
                     }
                 },
                 op = self.brx.recv() => {
                     if self.process_op(op.ok()).await == None {
-                        println!("BAD2");
                         break
                     }
                 },
                 msg = self.stream.read_message() => {
-                    if msg == None {
-                        println!("BAD3");
-                    }
                     if self.process_msg(msg, &mut bf).await == None {
                         break
                     }
